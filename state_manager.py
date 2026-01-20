@@ -1,0 +1,245 @@
+import logging
+from typing import Dict, List, Optional
+from datetime import datetime
+from database import db
+from config import MAX_HISTORY_MESSAGES
+
+logger = logging.getLogger(__name__)
+
+class StateManagerDB:
+    def __init__(self):
+        # Кеш в памяти для быстрого доступа
+        self._cache = {
+            'history': {},
+            'products': {},
+            'states': {},
+            'categories': {},
+            'dishes': {},
+            'current_dish': {},
+            'user_lang': {},
+            'products_lang': {},
+            'last_recipe_id': {}  # НОВОЕ: ID последнего сохранённого рецепта
+        }
+        
+        self.db_connected = False
+
+    async def initialize(self):
+        """Инициализация подключения к БД"""
+        try:
+            await db.connect()
+            self.db_connected = True
+            logger.info("✅ StateManagerDB инициализирован с БД")
+        except Exception as e:
+            logger.error(f"❌ Ошибка инициализации БД: {e}")
+            self.db_connected = False
+
+    # ==================== ОСНОВНЫЕ МЕТОДЫ ====================
+
+    async def load_user_session(self, user_id: int) -> bool:
+        """Загружаем сессию пользователя из БД в кеш"""
+        if not self.db_connected:
+            return False
+            
+        try:
+            session = await db.get_session(user_id)
+            if session:
+                self._cache['products'][user_id] = session.get('products', '')
+                self._cache['states'][user_id] = session.get('state', '')
+                self._cache['categories'][user_id] = session.get('categories', [])
+                self._cache['dishes'][user_id] = session.get('generated_dishes', [])
+                self._cache['current_dish'][user_id] = session.get('current_dish', '')
+                self._cache['history'][user_id] = session.get('history', [])
+                
+                logger.debug(f"📥 Сессия загружена из БД для user_id={user_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Ошибка загрузки сессии из БД: {e}")
+        
+        return False
+
+    async def save_session_to_db(self, user_id: int):
+        """Сохраняем сессию пользователя в БД"""
+        if not self.db_connected:
+            return
+            
+        try:
+            await db.create_or_update_session(
+                telegram_id=user_id,
+                products=self._cache['products'].get(user_id),
+                state=self._cache['states'].get(user_id),
+                categories=self._cache['categories'].get(user_id),
+                generated_dishes=self._cache['dishes'].get(user_id),
+                current_dish=self._cache['current_dish'].get(user_id),
+                history=self._cache['history'].get(user_id, [])[-MAX_HISTORY_MESSAGES:]
+            )
+            logger.debug(f"💾 Сессия сохранена в БД для user_id={user_id}")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения сессии в БД: {e}")
+
+    # ==================== ИСТОРИЯ ====================
+
+    def get_history(self, user_id: int) -> List[Dict]:
+        return self._cache['history'].get(user_id, [])
+
+    async def add_message(self, user_id: int, role: str, text: str):
+        if user_id not in self._cache['history']:
+            self._cache['history'][user_id] = []
+        
+        self._cache['history'][user_id].append({
+            "role": role, 
+            "text": text,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        if len(self._cache['history'][user_id]) > MAX_HISTORY_MESSAGES:
+            self._cache['history'][user_id] = self._cache['history'][user_id][-MAX_HISTORY_MESSAGES:]
+        
+        await self.save_session_to_db(user_id)
+
+    def get_last_bot_message(self, user_id: int) -> Optional[str]:
+        hist = self.get_history(user_id)
+        for msg in reversed(hist):
+            if msg["role"] == "bot":
+                return msg["text"]
+        return None
+
+    # ==================== ПРОДУКТЫ ====================
+
+    def get_products(self, user_id: int) -> Optional[str]:
+        return self._cache['products'].get(user_id)
+
+    async def set_products(self, user_id: int, products: str):
+        self._cache['products'][user_id] = products
+        await self.save_session_to_db(user_id)
+
+    async def append_products(self, user_id: int, new_products: str):
+        current = self._cache['products'].get(user_id)
+        if current:
+            self._cache['products'][user_id] = f"{current}, {new_products}"
+        else:
+            self._cache['products'][user_id] = new_products
+        
+        await self.save_session_to_db(user_id)
+
+    # ==================== СТАТУСЫ ====================
+
+    def get_state(self, user_id: int) -> Optional[str]:
+        return self._cache['states'].get(user_id)
+
+    async def set_state(self, user_id: int, state: str):
+        self._cache['states'][user_id] = state
+        await self.save_session_to_db(user_id)
+
+    async def clear_state(self, user_id: int):
+        if user_id in self._cache['states']:
+            del self._cache['states'][user_id]
+        await self.save_session_to_db(user_id)
+
+    # ==================== КАТЕГОРИИ И БЛЮДА ====================
+
+    async def set_categories(self, user_id: int, categories: List[str]):
+        self._cache['categories'][user_id] = categories
+        await self.save_session_to_db(user_id)
+
+    def get_categories(self, user_id: int) -> List[str]:
+        return self._cache['categories'].get(user_id, [])
+
+    async def set_generated_dishes(self, user_id: int, dishes: List[Dict]):
+        self._cache['dishes'][user_id] = dishes
+        await self.save_session_to_db(user_id)
+
+    def get_generated_dishes(self, user_id: int) -> List[Dict]:
+        return self._cache['dishes'].get(user_id, [])
+
+    def get_generated_dish(self, user_id: int, index: int) -> Optional[str]:
+        dishes = self.get_generated_dishes(user_id)
+        if 0 <= index < len(dishes):
+            return dishes[index]['name']
+        return None
+
+    async def set_current_dish(self, user_id: int, dish_name: str):
+        self._cache['current_dish'][user_id] = dish_name
+        await self.save_session_to_db(user_id)
+
+    def get_current_dish(self, user_id: int) -> Optional[str]:
+        return self._cache['current_dish'].get(user_id)
+
+    # ==================== МУЛЬТИЯЗЫЧНОСТЬ ====================
+
+    async def set_user_lang(self, user_id: int, lang: str):
+        self._cache['user_lang'][user_id] = lang
+        try:
+            if self.db_connected:
+                await db.update_user_language(user_id, lang)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения языка: {e}")
+
+    def get_user_lang(self, user_id: int) -> str:
+        return self._cache['user_lang'].get(user_id, 'ru')
+
+    def set_products_lang(self, user_id: int, lang: str):
+        self._cache['products_lang'][user_id] = lang
+
+    def get_products_lang(self, user_id: int) -> Optional[str]:
+        return self._cache['products_lang'].get(user_id)
+
+    # ==================== РЕЦЕПТЫ ====================
+
+    async def save_recipe_to_history(
+        self, 
+        user_id: int, 
+        dish_name: str, 
+        recipe_text: str,
+        image_url: Optional[str] = None
+    ) -> Optional[int]:
+        """Сохраняем рецепт в историю БД и возвращаем ID"""
+        if not self.db_connected:
+            return None
+            
+        try:
+            products = self.get_products(user_id)
+            recipe_id = await db.save_recipe(
+                telegram_id=user_id,
+                dish_name=dish_name,
+                recipe_text=recipe_text,
+                products_used=products,
+                image_url=image_url
+            )
+            
+            # Сохраняем ID последнего рецепта
+            self._cache['last_recipe_id'][user_id] = recipe_id
+            
+            logger.info(f"📝 Рецепт сохранён в историю: {dish_name} (ID: {recipe_id})")
+            return recipe_id
+        except Exception as e:
+            logger.error(f"Ошибка сохранения рецепта: {e}")
+            return None
+
+    def get_last_saved_recipe_id(self, user_id: int) -> Optional[int]:
+        """Получить ID последнего сохранённого рецепта"""
+        return self._cache['last_recipe_id'].get(user_id)
+
+    # ==================== ОЧИСТКА ====================
+
+    async def clear_session(self, user_id: int):
+        """Полная очистка сессии (кеш + БД)"""
+        for cache_key in self._cache:
+            if user_id in self._cache[cache_key]:
+                del self._cache[cache_key][user_id]
+        
+        if self.db_connected:
+            try:
+                await db.clear_session(user_id)
+                logger.info(f"🧹 Сессия очищена для user_id={user_id}")
+            except Exception as e:
+                logger.error(f"Ошибка очистки сессии в БД: {e}")
+
+    async def shutdown(self):
+        """Graceful shutdown - закрываем соединение с БД"""
+        if self.db_connected:
+            await db.close()
+            self.db_connected = False
+            logger.info("💤 StateManagerDB завершил работу")
+
+# Глобальный экземпляр
+state_manager = StateManagerDB()

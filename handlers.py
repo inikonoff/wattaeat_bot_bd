@@ -463,6 +463,19 @@ async def generate_and_send_recipe(message: Message, user_id: int, dish_name: st
 async def handle_generate_image(callback: CallbackQuery):
     """Кнопка '🎨 Сгенерировать фото' под рецептом"""
     user_id = callback.from_user.id
+    
+    # Проверяем лимит
+    is_admin = str(user_id) in ADMIN_IDS
+    can_generate, remaining = await database.check_image_limit(user_id, is_admin)
+    
+    if not can_generate:
+        await callback.answer(
+            "⚠️ Вы исчерпали дневной лимит генерации изображений (3 в день).\n"
+            "Попробуйте завтра!",
+            show_alert=True
+        )
+        return
+    
     dish_name = state_manager.get_current_dish(user_id)
     recipe = state_manager.get_last_bot_message(user_id)
     
@@ -485,7 +498,10 @@ async def handle_generate_image(callback: CallbackQuery):
         logger.warning(f"Ошибка проверки кеша: {e}")
     
     # Генерируем новое
-    wait = await callback.message.answer("🎨 Рисую ваше блюдо...")
+    wait = await callback.message.answer(
+        f"🎨 Рисую ваше блюдо...\n"
+        f"{'🔓 Админ режим: без лимитов' if is_admin else f'📊 Осталось сегодня: {remaining - 1}'}"
+    )
     await callback.answer()
     
     try:
@@ -555,6 +571,10 @@ async def handle_generate_image(callback: CallbackQuery):
         recipe_id = state_manager.get_last_saved_recipe_id(user_id)
         if recipe_id:
             await database.update_recipe_image(recipe_id, image_url)
+        
+        # Увеличиваем счётчик (только для не-админов)
+        if not is_admin:
+            await database.increment_image_count(user_id)
         
         # Отправляем
         await wait.delete()

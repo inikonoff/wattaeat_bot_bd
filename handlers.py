@@ -76,7 +76,8 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False):
     if recipe_id:
         buttons.append([InlineKeyboardButton(text="❤️ В избранное", callback_data=f"fav_add_{recipe_id}")])
     
-    buttons.append([InlineKeyboardButton(text="🔄 Другой вариант", callback_data="repeat_recipe")])
+    # ИЗМЕНЕНО: Вместо "Другой вариант" теперь "Новый набор продуктов"
+    buttons.append([InlineKeyboardButton(text="🛒 Новый набор продуктов", callback_data="new_products_set")])
     buttons.append([InlineKeyboardButton(text="⬅️ Вернуться к категориям", callback_data="back_to_categories")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -130,24 +131,16 @@ async def cmd_start(message: Message):
             last_name=last_name
         )
         
+        # ИЗМЕНЕНО: Всегда очищаем сессию при /start
+        await state_manager.clear_session(user_id)
         await state_manager.load_user_session(user_id)
-        current_products = state_manager.get_products(user_id)
         
-        if current_products:
-            text = (
-                "🔄 <b>Продолжаем предыдущую сессию</b>\n\n"
-                f"🛒 Ваши продукты: <b>{current_products}</b>\n\n"
-                "✏️ Добавьте продукты или выберите:"
-            )
-            await message.answer(text, reply_markup=get_confirmation_keyboard(), parse_mode="HTML")
-        else:
-            await state_manager.clear_session(user_id)
-            text = (
-                "👋 Здравствуйте.\n"
-                "🎤 Отправьте голосовое или текстовое сообщение с перечнем продуктов на русском или иностранном языке, и я подскажу, что из них можно приготовить.\n"
-                "📝 Или напишите 'Дай рецепт [блюдо]'.\n"
-            )
-            await message.answer(text, parse_mode="HTML")
+        text = (
+            "👋 Здравствуйте.\n"
+            "🎤 Отправьте голосовое или текстовое сообщение с перечнем продуктов на русском или иностранном языке, и я подскажу, что из них можно приготовить.\n"
+            "📝 Или напишите 'Дай рецепт [блюдо]'.\n"
+        )
+        await message.answer(text, parse_mode="HTML")
             
     except Exception as e:
         logger.error(f"Ошибка при старте: {e}")
@@ -908,14 +901,15 @@ async def handle_callback(callback: CallbackQuery):
             logger.error(f"Dish error: {e}")
         return
 
-    # 7. Повтор рецепта
-    if data == "repeat_recipe":
-        dish_name = state_manager.get_current_dish(user_id)
-        if not dish_name:
-            await callback.answer("Нет данных.")
-            return
-        await callback.answer("Генерирую...")
-        await generate_and_send_recipe(callback.message, user_id, dish_name)
+    # 7. Новый набор продуктов (вместо "Другой вариант")
+    if data == "new_products_set":
+        await state_manager.clear_session(user_id)
+        await callback.message.answer(
+            "🛒 <b>Новый набор продуктов</b>\n\n"
+            "✏️ Напишите или продиктуйте список продуктов, с которых хотите начать.",
+            parse_mode="HTML"
+        )
+        await callback.answer()
         return
 
     # 8. Удаление сообщения

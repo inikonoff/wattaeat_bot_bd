@@ -10,6 +10,14 @@ class AdminService:
     MEDALS = ["🥇", "🥈", "🥉"]
     
     @staticmethod
+    def _create_bar_chart(label: str, value: int, max_value: int, width: int = 10) -> str:
+        """Создаёт ASCII бар"""
+        filled = int((value / max_value) * width) if max_value > 0 else 0
+        empty = width - filled
+        bar = "█" * filled + "░" * empty
+        return f"{label} {bar} {value}"
+    
+    @staticmethod
     async def get_stats_message() -> str:
         """Формирует сообщение с общей статистикой"""
         try:

@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from typing import List, Dict
 from database import db
 

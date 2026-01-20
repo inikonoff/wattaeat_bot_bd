@@ -1,4 +1,4 @@
-﻿import asyncpg
+import asyncpg
 from typing import List, Dict, Any, Optional
 import json
 import logging

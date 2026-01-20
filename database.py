@@ -1,4 +1,4 @@
-﻿import asyncpg
+import asyncpg
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -361,6 +361,64 @@ class Database:
                 SET image_url = $3, storage_backend = $4, file_size = $5
                 """,
                 dish_name, recipe_hash, image_url, backend, file_size
+            )
+
+    async def check_image_limit(self, user_id: int, is_admin: bool = False) -> tuple[bool, int]:
+        """
+        Проверяет лимит генерации изображений
+        
+        Returns:
+            (can_generate, remaining): (Можно ли генерировать, сколько осталось)
+        """
+        async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                "SELECT daily_image_limit, images_generated_today, last_image_date FROM users WHERE id = $1",
+                user_id
+            )
+            
+            if not user:
+                return False, 0
+            
+            # Админы без лимитов
+            if is_admin or user['daily_image_limit'] == -1:
+                return True, -1  # -1 = unlimited
+            
+            # Проверяем дату (сброс счётчика)
+            from datetime import date
+            today = date.today()
+            
+            if user['last_image_date'] != today:
+                # Новый день - сбрасываем счётчик
+                await conn.execute(
+                    "UPDATE users SET images_generated_today = 0, last_image_date = $1 WHERE id = $2",
+                    today, user_id
+                )
+                remaining = user['daily_image_limit']
+            else:
+                remaining = user['daily_image_limit'] - user['images_generated_today']
+            
+            can_generate = remaining > 0
+            return can_generate, remaining
+
+    async def increment_image_count(self, user_id: int):
+        """Увеличить счётчик сгенерированных изображений"""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE users 
+                SET images_generated_today = images_generated_today + 1,
+                    last_image_date = CURRENT_DATE
+                WHERE id = $1
+                """,
+                user_id
+            )
+
+    async def set_admin_unlimited_images(self, user_id: int):
+        """Установить безлимитную генерацию для админа"""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET daily_image_limit = -1 WHERE id = $1",
+                user_id
             )
 
     # ==================== АДМИНКА - СТАТИСТИКА ====================

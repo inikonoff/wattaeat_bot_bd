@@ -1,4 +1,4 @@
-import asyncpg
+﻿import asyncpg
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -482,36 +482,36 @@ class Database:
             return [dict(dish) for dish in top_dishes]
 
     async def get_random_fact(self) -> str:
-    """Генерирует случайный факт из статистики"""
-    async with self.pool.acquire() as conn:
-        # Разные виды фактов
-        facts_queries = [
-            # Самое популярное блюдо
-            """
-            SELECT dish_name, COUNT(*) as cnt
-            FROM recipes
-            GROUP BY dish_name
-            ORDER BY cnt DESC
-            LIMIT 1
-            """,
-            # Самый активный день недели
-            """
-            SELECT 
-                TO_CHAR(created_at, 'Day') as day_name,
-                COUNT(*) as cnt
-            FROM recipes
-            WHERE created_at > NOW() - INTERVAL '30 days'
-            GROUP BY TO_CHAR(created_at, 'Day')
-            ORDER BY cnt DESC
-            LIMIT 1
-            """,
-            # Общее количество рецептов за неделю
-            """
-            SELECT COUNT(*) as cnt
-            FROM recipes
-            WHERE created_at > NOW() - INTERVAL '7 days'
-            """,
-        ]
+        """Генерирует случайный факт из статистики"""
+        async with self.pool.acquire() as conn:
+            # Разные виды фактов
+            facts_queries = [
+                # Самое популярное блюдо
+                """
+                SELECT dish_name, COUNT(*) as cnt
+                FROM recipes
+                GROUP BY dish_name
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                # Самый активный день недели
+                """
+                SELECT 
+                    TO_CHAR(created_at, 'Day') as day_name,
+                    COUNT(*) as cnt
+                FROM recipes
+                WHERE created_at > NOW() - INTERVAL '30 days'
+                GROUP BY TO_CHAR(created_at, 'Day')
+                ORDER BY cnt DESC
+                LIMIT 1
+                """,
+                # Общее количество рецептов за неделю
+                """
+                SELECT COUNT(*) as cnt
+                FROM recipes
+                WHERE created_at > NOW() - INTERVAL '7 days'
+                """,
+            ]
             
             import random
             query = random.choice(facts_queries)

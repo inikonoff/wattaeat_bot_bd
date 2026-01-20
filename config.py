@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API ключи
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8574719975:AAFqmhlMoy3VFeZqZJA2ex83Gat2wvcqytE")
 
 # Groq (поддержка нескольких ключей для fallback)
 GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", os.getenv("GROQ_API_KEY", "")).split(",")

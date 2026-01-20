@@ -1,4 +1,4 @@
-﻿import os
+import os
 import logging
 import hashlib
 from typing import Optional, Tuple

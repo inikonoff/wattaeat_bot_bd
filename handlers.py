@@ -15,6 +15,7 @@ from admin_service import admin_service
 from storage_service import storage_service
 from replicate_image import generate_with_fallback
 from config import ADMIN_IDS
+from card_generator import card_generator  # НОВОЕ: Импорт кард генератора
 
 # Инициализация
 voice_processor = VoiceProcessor()
@@ -71,6 +72,9 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False):
     # Кнопка генерации изображения (если ещё нет)
     if not has_image:
         buttons.append([InlineKeyboardButton(text="🎨 Сгенерировать фото", callback_data="gen_image")])
+    
+    # НОВОЕ: Кнопка поделиться рецептом
+    buttons.append([InlineKeyboardButton(text="📤 Поделиться рецептом", callback_data="share_recipe")])
     
     # Кнопка "В избранное" (если есть ID рецепта)
     if recipe_id:
@@ -675,6 +679,61 @@ async def handle_show_favorite(callback: CallbackQuery):
         logger.error(f"Ошибка показа избранного: {e}")
         await callback.answer("❌ Ошибка загрузки рецепта")
 
+# --- ГЕНЕРАЦИЯ КАРТОЧКИ ДЛЯ ШАРИНГА ---
+
+async def handle_share_recipe(callback: CallbackQuery):
+    """Генерация карточки для шаринга"""
+    user_id = callback.from_user.id
+    
+    dish_name = state_manager.get_current_dish(user_id)
+    recipe_text = state_manager.get_last_bot_message(user_id)
+    
+    if not dish_name or not recipe_text:
+        await callback.answer("❌ Рецепт не найден")
+        return
+    
+    wait = await callback.message.answer("📸 Создаю красивую карточку...")
+    await callback.answer()
+    
+    try:
+        # Парсим рецепт
+        recipe_data = GroqService.parse_recipe_for_card(recipe_text)
+        
+        # Получаем изображение блюда (если есть)
+        recipe_id = state_manager.get_last_saved_recipe_id(user_id)
+        image_url = None
+        
+        if recipe_id:
+            recipe_from_db = await database.get_recipe_by_id(recipe_id)
+            if recipe_from_db and recipe_from_db.get('image_url'):
+                image_url = recipe_from_db['image_url']
+        
+        # Генерируем карточку
+        card_bytes = await card_generator.generate_card(
+            dish_name=dish_name,
+            ingredients=recipe_data['ingredients'],
+            cooking_time=recipe_data['cooking_time'],
+            servings=recipe_data['servings'],
+            difficulty=recipe_data['difficulty'],
+            chef_tip=recipe_data['chef_tip'],
+            image_url=image_url
+        )
+        
+        await wait.delete()
+        
+        # Отправляем карточку
+        photo = BufferedInputFile(card_bytes, filename=f"{dish_name[:20]}_recipe.png")
+        await callback.message.answer_photo(
+            photo,
+            caption=f"📤 Карточка рецепта готова!\n\nТеперь можно поделиться с друзьями 👨‍🍳"
+        )
+        
+        logger.info(f"✅ Карточка создана: {dish_name}")
+        
+    except Exception as e:
+        await wait.edit_text("❌ Ошибка создания карточки")
+        logger.error(f"Ошибка генерации карточки: {e}", exc_info=True)
+
 # --- АДМИНКА ---
 
 async def handle_admin_stats(callback: CallbackQuery):
@@ -747,7 +806,7 @@ async def handle_broadcast_message(message: Message):
     
     await message.answer(
         "📢 <b>Подтверждение рассылки</b>\n\n"
-        "Вы уверены, что хотите отправить это сообщение всем пользователям?",
+        "Вы уверены, что хотите отправить это сообщение всем пользователей?",
         reply_markup=confirm_kb,
         parse_mode="HTML"
     )
@@ -792,213 +851,4 @@ async def handle_broadcast_confirm(callback: CallbackQuery):
         await callback.message.edit_text(
             f"✅ <b>Рассылка завершена</b>\n\n"
             f"📤 Успешно: {success_count}\n"
-            f"❌ Ошибок: {failed_count}\n"
-            f"👥 Всего: {len(all_users)}",
-            parse_mode="HTML"
-        )
-        
-        # Очищаем состояние
-        await state_manager.clear_state(user_id)
-        if user_id in state_manager._cache.get('broadcast_text', {}):
-            del state_manager._cache['broadcast_text'][user_id]
-        
-    except Exception as e:
-        logger.error(f"Ошибка broadcast: {e}")
-        await callback.message.edit_text(f"❌ Ошибка рассылки: {e}")
-
-async def handle_broadcast_cancel(callback: CallbackQuery):
-    """Отмена broadcast"""
-    user_id = callback.from_user.id
-    await state_manager.clear_state(user_id)
-    
-    if user_id in state_manager._cache.get('broadcast_text', {}):
-        del state_manager._cache['broadcast_text'][user_id]
-    
-    await callback.message.edit_text("❌ Рассылка отменена")
-    await callback.answer()
-
-# --- CALLBACK ОБРАБОТЧИКИ ---
-
-async def handle_callback(callback: CallbackQuery):
-    """Обработка всех callback-запросов"""
-    user_id = callback.from_user.id
-    data = callback.data
-    
-    # 1. Сброс
-    if data == "restart":
-        await state_manager.clear_session(user_id)
-        await callback.message.answer("🗑 Список очищен. Жду продукты.")
-        await callback.answer()
-        return
-    
-    # 2. Очистка истории пользователя
-    if data == "clear_my_history":
-        try:
-            async with database.pool.acquire() as conn:
-                await conn.execute("DELETE FROM recipes WHERE user_id = $1", user_id)
-            await callback.message.edit_text("✅ Ваша история рецептов очищена.")
-        except Exception as e:
-            logger.error(f"Ошибка очистки истории: {e}")
-            await callback.message.edit_text("❌ Ошибка очистки истории.")
-        await callback.answer()
-        return
-
-    # 3. Выбор: Добавить или Готовить
-    if data == "action_add_more":
-        await callback.message.answer("✏️ Напишите или продиктуйте, что добавить:")
-        await callback.answer()
-        return
-    
-    if data == "action_cook":
-        await callback.message.delete()
-        await start_category_flow(callback.message, user_id)
-        await callback.answer()
-        return
-
-    # 4. Выбор категории
-    if data.startswith("cat_"):
-        category = data.split("_")[1]
-        products = state_manager.get_products(user_id)
-        await callback.message.delete()
-        await show_dishes_for_category(callback.message, user_id, products, category)
-        await callback.answer()
-        return
-
-    # 5. Назад к категориям
-    if data == "back_to_categories":
-        categories = state_manager.get_categories(user_id)
-        if not categories:
-            await callback.answer("Сессия истекла.")
-            return
-        
-        await callback.message.delete()
-        if len(categories) == 1:
-            await callback.message.answer("Категория была одна.", 
-                                        reply_markup=get_categories_keyboard(categories))
-        else:
-            await callback.message.answer("📂 <b>Выберите категорию:</b>", 
-                                        reply_markup=get_categories_keyboard(categories), 
-                                        parse_mode="HTML")
-        await callback.answer()
-        return
-
-    # 6. Выбор блюда
-    if data.startswith("dish_"):
-        try:
-            if data == "dish_all_mix":
-                dishes = state_manager.get_generated_dishes(user_id)
-                dish_name = " + ".join([d['name'] for d in dishes])
-            else:
-                index = int(data.split("_")[1])
-                dish_name = state_manager.get_generated_dish(user_id, index)
-            
-            if not dish_name:
-                await callback.answer("Меню устарело.")
-                return
-            await callback.answer("Готовлю...")
-            await generate_and_send_recipe(callback.message, user_id, dish_name)
-        except Exception as e:
-            logger.error(f"Dish error: {e}")
-        return
-
-    # 7. Новый набор продуктов (вместо "Другой вариант")
-    if data == "new_products_set":
-        await state_manager.clear_session(user_id)
-        await callback.message.answer(
-            "🛒 <b>Новый набор продуктов</b>\n\n"
-            "✏️ Напишите или продиктуйте список продуктов, с которых хотите начать.",
-            parse_mode="HTML"
-        )
-        await callback.answer()
-        return
-
-    # 8. Удаление сообщения
-    if data == "delete_msg":
-        await callback.message.delete()
-        await callback.answer()
-        return
-    
-    # 9. Генерация изображения
-    if data == "gen_image":
-        await handle_generate_image(callback)
-        return
-    
-    # 10. Добавление в избранное
-    if data.startswith("fav_add_"):
-        await handle_add_to_favorites(callback)
-        return
-    
-    # 11. Показ избранного
-    if data.startswith("fav_") and not data.startswith("fav_add_"):
-        await handle_show_favorite(callback)
-        return
-    
-    # 12. Админка - статистика
-    if data == "admin_stats":
-        await handle_admin_stats(callback)
-        return
-    
-    # 13. Админка - топ поваров
-    if data == "admin_top_cooks":
-        await handle_admin_top_cooks(callback)
-        return
-    
-    # 14. Админка - топ продуктов
-    if data == "admin_top_ingredients":
-        await handle_admin_top_ingredients(callback)
-        return
-    
-    # 15. Админка - топ блюд
-    if data == "admin_top_dishes":
-        await handle_admin_top_dishes(callback)
-        return
-    
-    # 16. Админка - случайный факт
-    if data == "admin_random_fact":
-        await handle_admin_random_fact(callback)
-        return
-    
-    # 17. Админка - broadcast
-    if data == "admin_broadcast":
-        await handle_admin_broadcast(callback)
-        return
-    
-    # 18. Подтверждение broadcast
-    if data == "broadcast_confirm":
-        await handle_broadcast_confirm(callback)
-        return
-    
-    # 19. Отмена broadcast
-    if data == "broadcast_cancel":
-        await handle_broadcast_cancel(callback)
-        return
-
-# --- РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ---
-
-def register_handlers(dp: Dispatcher):
-    # Команды
-    dp.message.register(cmd_start, Command("start"))
-    dp.message.register(cmd_author, Command("author"))
-    dp.message.register(cmd_stats, Command("stats"))
-    dp.message.register(cmd_favorites, Command("favorites"))
-    dp.message.register(cmd_admin, Command("admin"))
-    
-    # Запросы рецептов
-    dp.message.register(handle_direct_recipe, F.text.lower().startswith("дай рецепт"))
-    dp.message.register(handle_direct_recipe, F.text.lower().startswith("рецепт"))
-    dp.message.register(handle_direct_recipe, F.text.lower().startswith("как приготовить"))
-    
-    # Broadcast (только для админов в состоянии awaiting_broadcast)
-    dp.message.register(
-        handle_broadcast_message,
-        lambda msg: str(msg.from_user.id) in ADMIN_IDS and 
-                    state_manager.get_state(msg.from_user.id) == "awaiting_broadcast"
-    )
-    
-    # Контент
-    dp.message.register(handle_voice, F.voice)
-    dp.message.register(handle_text, F.text)
-    
-    # Callbacks
-    dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
-    dp.callback_query.register(handle_callback)
+            f"❌ Ошибок: {failed_count

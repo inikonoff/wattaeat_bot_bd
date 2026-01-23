@@ -402,6 +402,51 @@ class GroqService:
         return res + "\n\n👨‍🍳 <b>Приятного аппетита!</b>"
 
     @staticmethod
+    def parse_recipe_for_card(recipe_text: str) -> dict:
+        """Извлекает данные из рецепта для карточки"""
+        import re
+        
+        # Извлекаем ингредиенты
+        ingredients = []
+        lines = recipe_text.split('\n')
+        in_ingredients = False
+        
+        for line in lines:
+            if 'Ингредиенты:' in line or 'Ingredients:' in line:
+                in_ingredients = True
+                continue
+            
+            if in_ingredients:
+                if line.strip().startswith('🔸') or line.strip().startswith('•'):
+                    ingredient = line.strip().lstrip('🔸•- ').strip()
+                    if ingredient and len(ingredient) > 2:
+                        ingredients.append(ingredient)
+                elif 'Пищевая' in line or 'Время:' in line:
+                    break
+        
+        # Извлекаем мета-данные
+        time_match = re.search(r'⏱.*?(\d+)\s*минут', recipe_text)
+        cooking_time = f"{time_match.group(1)} мин" if time_match else "30 мин"
+        
+        servings_match = re.search(r'👥.*?(\d+)', recipe_text)
+        servings = f"{servings_match.group(1)} порц" if servings_match else "2 порц"
+        
+        difficulty_match = re.search(r'🪦.*?([А-Яа-яA-Za-z]+)', recipe_text)
+        difficulty = difficulty_match.group(1) if difficulty_match else "Средняя"
+        
+        # Совет шеф-повара
+        tip_match = re.search(r'💡 Совет.*?:\s*(.+?)(?:\n\n|$)', recipe_text, re.DOTALL)
+        chef_tip = tip_match.group(1).strip() if tip_match else ""
+        
+        return {
+            'ingredients': ingredients,
+            'cooking_time': cooking_time,
+            'servings': servings,
+            'difficulty': difficulty,
+            'chef_tip': chef_tip
+        }
+
+    @staticmethod
     def _is_refusal(text: str) -> bool:
         refusals = ["cannot fulfill", "against my policy", "не могу выполнить", "⛔"]
         return any(ph in text.lower() for ph in refusals)

@@ -21,7 +21,6 @@ from card_generator import recipe_card_generator
 from config import ADMIN_IDS
 
 # Инициализация
-voice_processor = VoiceProcessor()
 logger = logging.getLogger(__name__)
 
 # --- СЛОВАРЬ КАТЕГОРИЙ ---

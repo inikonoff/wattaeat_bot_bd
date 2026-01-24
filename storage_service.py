@@ -1,6 +1,5 @@
-import os
+﻿import os
 import logging
-import hashlib
 from typing import Optional, Tuple
 from datetime import datetime
 from supabase import create_client, Client
@@ -35,6 +34,7 @@ class StorageService:
                 logger.info("✅ Основное хранилище Supabase подключено")
             except Exception as e:
                 logger.error(f"❌ Ошибка подключения к основному хранилищу: {e}")
+                self.main_available = False
         else:
             logger.warning("⚠️ Основное хранилище Supabase не настроено")
         
@@ -47,6 +47,7 @@ class StorageService:
                 logger.info("✅ Fallback хранилище Supabase подключено")
             except Exception as e:
                 logger.error(f"❌ Ошибка подключения к fallback хранилищу: {e}")
+                self.fallback_available = False
         else:
             logger.info("ℹ️ Fallback хранилище не настроено (опционально)")
         
@@ -198,7 +199,7 @@ class StorageService:
             "fallback_available": self.fallback_available,
         }
         
-        # Пробуем получить размер bucket (если API поддерживает)
+        # Пробуем получить размер bucket
         try:
             if self.main_available:
                 files = self.main_client.storage.from_(self.BUCKET_NAME).list()

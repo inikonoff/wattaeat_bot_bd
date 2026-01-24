@@ -16,9 +16,8 @@ class StateManagerDB:
             'categories': {},
             'dishes': {},
             'current_dish': {},
-            'user_lang': {},
-            'products_lang': {},
-            'last_recipe_id': {}  # НОВОЕ: ID последнего сохранённого рецепта
+            'last_recipe_id': {},
+            'broadcast_text': {}  # Для хранения текста broadcast
         }
         
         self.db_connected = False
@@ -164,25 +163,6 @@ class StateManagerDB:
     def get_current_dish(self, user_id: int) -> Optional[str]:
         return self._cache['current_dish'].get(user_id)
 
-    # ==================== МУЛЬТИЯЗЫЧНОСТЬ ====================
-
-    async def set_user_lang(self, user_id: int, lang: str):
-        self._cache['user_lang'][user_id] = lang
-        try:
-            if self.db_connected:
-                await db.update_user_language(user_id, lang)
-        except Exception as e:
-            logger.error(f"Ошибка сохранения языка: {e}")
-
-    def get_user_lang(self, user_id: int) -> str:
-        return self._cache['user_lang'].get(user_id, 'ru')
-
-    def set_products_lang(self, user_id: int, lang: str):
-        self._cache['products_lang'][user_id] = lang
-
-    def get_products_lang(self, user_id: int) -> Optional[str]:
-        return self._cache['products_lang'].get(user_id)
-
     # ==================== РЕЦЕПТЫ ====================
 
     async def save_recipe_to_history(
@@ -218,6 +198,21 @@ class StateManagerDB:
     def get_last_saved_recipe_id(self, user_id: int) -> Optional[int]:
         """Получить ID последнего сохранённого рецепта"""
         return self._cache['last_recipe_id'].get(user_id)
+
+    # ==================== BROADCAST ====================
+
+    async def set_broadcast_text(self, user_id: int, text: str):
+        """Сохраняет текст для broadcast"""
+        self._cache['broadcast_text'][user_id] = text
+
+    def get_broadcast_text(self, user_id: int) -> Optional[str]:
+        """Получает сохранённый текст broadcast"""
+        return self._cache['broadcast_text'].get(user_id)
+
+    async def clear_broadcast_text(self, user_id: int):
+        """Очищает текст broadcast"""
+        if user_id in self._cache['broadcast_text']:
+            del self._cache['broadcast_text'][user_id]
 
     # ==================== ОЧИСТКА ====================
 

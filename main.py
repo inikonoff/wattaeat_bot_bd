@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import os
 import logging
 import sys
@@ -10,6 +10,8 @@ from state_manager import state_manager
 from aiohttp import web
 from database import db
 from storage_service import storage_service
+from groq_service import groq_service
+from pollinations_service import pollinations_service
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,6 +34,8 @@ async def start_web_server():
         app = web.Application()
         app.router.add_get('/', health_check)
         app.router.add_get('/health', health_check)
+        app.router.add_get('/ping', health_check)
+        
         runner = web.AppRunner(app)
         await runner.setup()
         
@@ -59,7 +63,7 @@ async def setup_bot_commands(bot: Bot):
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 async def main():
-    logger.info("🤖 Инициализация кулинарного бота с БД Supabase...")
+    logger.info("🤖 Инициализация кулинарного бота с улучшениями...")
     
     # 1. Инициализация базы данных
     try:
@@ -84,19 +88,41 @@ async def main():
         logger.error(f"❌ Ошибка инициализации Storage: {e}")
         logger.warning("⚠️  Изображения не будут сохраняться")
     
-    # 4. Запуск веб-сервера для Render
+    # 4. Инициализация GroqService
+    try:
+        # GroqService уже инициализирован при импорте
+        if groq_service.clients:
+            logger.info(f"✅ GroqService инициализирован ({len(groq_service.clients)} клиентов)")
+        else:
+            logger.warning("⚠️ GroqService не имеет клиентов - проверьте GROQ_API_KEYS")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации GroqService: {e}")
+    
+    # 5. Инициализация PollinationsService
+    try:
+        logger.info("✅ PollinationsService готов к работе")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации PollinationsService: {e}")
+    
+    # 6. Запуск веб-сервера для Render
     await start_web_server()
     
-    # 5. Регистрация обработчиков
+    # 7. Регистрация обработчиков
     register_handlers(dp)
     logger.info("✅ Обработчики зарегистрированы")
     
-    # 6. Настройка команд бота
+    # 8. Настройка команд бота
     await setup_bot_commands(bot)
     
     logger.info("🚀 Запуск бота...")
+    logger.info("✨ Новые функции:")
+    logger.info("• 🎤 Быстрая голосовая транскрибация (Whisper 3 Turbo)")
+    logger.info("• 🎨 Бесплатная генерация изображений (Pollinations.ai)")
+    logger.info("• 📤 PNG карточки для соцсетей")
+    logger.info("• 📊 Графики в админке")
+    logger.info("• 🏆 Двойное хранилище Supabase")
     
-    # 7. Удаляем вебхук и запускаем polling
+    # 9. Удаляем вебхук и запускаем polling
     await bot.delete_webhook(drop_pending_updates=True)
     
     try:

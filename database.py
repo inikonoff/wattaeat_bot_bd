@@ -1,4 +1,6 @@
-﻿import asyncpg
+[file name]: database.py (ИСПРАВЛЕННАЯ ВЕРСИЯ ДЛЯ ТРАНЗАКЦИОННОГО ПУЛЕРА)
+[file content begin]
+import asyncpg
 from typing import List, Dict, Any, Optional
 import json
 import logging
@@ -13,21 +15,55 @@ class Database:
         self.pool: Optional[asyncpg.Pool] = None
 
     async def connect(self):
-        """Подключение к базе данных Supabase"""
+        """Подключение к базе данных через Transaction Pooler (порт 6543)"""
         try:
+            # Проверяем, использует ли DATABASE_URL порт 6543
+            db_url = DATABASE_URL
+            if ":6543" not in db_url:
+                logger.warning("⚠️  DATABASE_URL не использует порт 6543 (transaction pooler)")
+                logger.warning("   Для Supabase используйте: postgresql://postgres:password@db.project_id.supabase.co:6543/postgres")
+            
             self.pool = await asyncpg.create_pool(
-                DATABASE_URL,
+                db_url,
                 min_size=1,
                 max_size=5,
-                statement_cache_size=0,
+                statement_cache_size=0,  # КРИТИЧЕСКИ ВАЖНО для transaction pooler
                 command_timeout=60,
-                max_inactive_connection_lifetime=300
+                max_inactive_connection_lifetime=300,
+                server_settings={
+                    'application_name': 'cooking_bot',
+                    'search_path': 'public'
+                }
             )
-            await self._check_tables()
-            logger.info("✅ Успешное подключение к Supabase PostgreSQL")
+            
+            # Проверяем подключение
+            async with self.pool.acquire() as conn:
+                result = await conn.fetchval("SELECT 1")
+                if result == 1:
+                    logger.info(f"✅ Успешное подключение к Supabase через Transaction Pooler")
+                    logger.info("   Connection String: " + db_url.split('@')[1].split(':')[0])
+                else:
+                    raise Exception("Connection test failed")
+                    
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к БД: {e}")
-            raise
+            logger.error(f"❌ Ошибка подключения к БД через Transaction Pooler: {e}")
+            logger.error(f"   URL: {DATABASE_URL}")
+            
+            # Пробуем подключиться к стандартному порту 5432 как fallback
+            logger.info("🔄 Пробую подключиться к порту 5432...")
+            try:
+                fallback_url = db_url.replace(":6543", ":5432")
+                self.pool = await asyncpg.create_pool(
+                    fallback_url,
+                    min_size=1,
+                    max_size=3,
+                    statement_cache_size=0,
+                    command_timeout=30
+                )
+                logger.info("⚠️  Подключение к порту 5432 (не рекомендуется для Supabase)")
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback также не удался: {fallback_error}")
+                raise e
 
     async def close(self):
         """Graceful shutdown пула соединений"""
@@ -46,9 +82,11 @@ class Database:
             """)
             found_tables = [t['tablename'] for t in tables]
             
-            if len(tables) < 3:
+            if len(tables) < 4:
                 logger.warning("⚠️  Некоторые таблицы отсутствуют!")
                 logger.warning(f"Найдены таблицы: {found_tables}")
+                return False
+            return True
 
     # ==================== ПОЛЬЗОВАТЕЛИ ====================
 
@@ -69,7 +107,7 @@ class Database:
             
             if not user:
                 # Определяем лимит: безлимит для админа, обычный для других
-                daily_limit = DAILY_IMAGE_LIMIT_ADMIN if str(telegram_id) in ADMIN_IDS else DAILY_IMAGE_LIMIT_NORMAL
+                daily_limit = DAILY_IMAGE_LIMIT_ADMIN if telegram_id in ADMIN_IDS else DAILY_IMAGE_LIMIT_NORMAL
                 
                 user = await conn.fetchrow(
                     """
@@ -114,97 +152,129 @@ class Database:
             rows = await conn.fetch("SELECT id FROM users ORDER BY id")
             return [row['id'] for row in rows]
 
-    # ==================== ЛИМИТЫ ИЗОБРАЖЕНИЙ ====================
+    # ==================== ЛИМИТЫ ИЗОБРАЖЕНИЙ (ЧЕРЕЗ SQL ФУНКЦИИ) ====================
 
     async def check_image_limit(self, telegram_id: int) -> tuple[bool, int, int]:
         """
-        Проверяет лимит генерации изображений
+        Проверяет лимит генерации изображений через SQL функцию
         
         Returns:
             tuple[can_generate, remaining, limit]
         """
         async with self.pool.acquire() as conn:
-            user = await conn.fetchrow(
+            try:
+                # Используем созданную SQL функцию
+                result = await conn.fetchrow(
+                    "SELECT * FROM check_image_limit($1)",
+                    telegram_id
+                )
+                
+                if result:
+                    return result['can_generate'], result['remaining'], result['user_limit']
+                else:
+                    # Fallback если функция не существует
+                    return await self._check_image_limit_fallback(conn, telegram_id)
+                    
+            except Exception as e:
+                logger.error(f"Ошибка вызова check_image_limit: {e}")
+                return await self._check_image_limit_fallback(conn, telegram_id)
+
+    async def _check_image_limit_fallback(self, conn, telegram_id: int) -> tuple[bool, int, int]:
+        """Fallback метод если SQL функция не работает"""
+        user = await conn.fetchrow(
+            """
+            SELECT 
+                daily_image_limit,
+                images_generated_today,
+                last_image_date
+            FROM users 
+            WHERE id = $1
+            """,
+            telegram_id
+        )
+        
+        if not user:
+            return False, 0, 0
+        
+        limit = user['daily_image_limit']
+        
+        # Безлимит для админа
+        if limit == -1:
+            return True, -1, -1
+        
+        # Проверяем дату
+        today = datetime.now().date()
+        last_date = user['last_image_date']
+        
+        # Если дата не сегодня - сбрасываем счётчик
+        if last_date != today:
+            await conn.execute(
                 """
-                SELECT 
-                    daily_image_limit,
-                    images_generated_today,
-                    last_image_date
-                FROM users 
+                UPDATE users 
+                SET images_generated_today = 0,
+                    last_image_date = CURRENT_DATE
                 WHERE id = $1
                 """,
                 telegram_id
             )
-            
-            if not user:
-                return False, 0, 0
-            
-            limit = user['daily_image_limit']
-            
-            # Безлимит для админа
-            if limit == -1:
-                return True, -1, -1
-            
-            # Проверяем дату
-            today = datetime.now().date()
-            last_date = user['last_image_date']
-            
-            # Если дата не сегодня - сбрасываем счётчик
-            if last_date != today:
-                await conn.execute(
-                    """
-                    UPDATE users 
-                    SET images_generated_today = 0,
-                        last_image_date = CURRENT_DATE
-                    WHERE id = $1
-                    """,
-                    telegram_id
-                )
-                remaining = limit
-            else:
-                remaining = limit - user['images_generated_today']
-            
-            can_generate = remaining > 0
-            return can_generate, remaining, limit
+            remaining = limit
+        else:
+            remaining = limit - user['images_generated_today']
+        
+        can_generate = remaining > 0
+        return can_generate, remaining, limit
 
     async def increment_image_count(self, telegram_id: int) -> bool:
-        """Увеличивает счётчик сгенерированных изображений"""
+        """Увеличивает счётчик сгенерированных изображений через SQL функцию"""
         async with self.pool.acquire() as conn:
-            # Сначала проверяем дату
-            user = await conn.fetchrow(
-                "SELECT last_image_date FROM users WHERE id = $1",
+            try:
+                # Используем созданную SQL функцию
+                result = await conn.fetchval(
+                    "SELECT increment_image_count($1)",
+                    telegram_id
+                )
+                return bool(result)
+            except Exception as e:
+                logger.error(f"Ошибка вызова increment_image_count: {e}")
+                # Fallback
+                return await self._increment_image_count_fallback(conn, telegram_id)
+
+    async def _increment_image_count_fallback(self, conn, telegram_id: int) -> bool:
+        """Fallback метод увеличения счётчика"""
+        user = await conn.fetchrow(
+            "SELECT last_image_date FROM users WHERE id = $1",
+            telegram_id
+        )
+        
+        if not user:
+            return False
+        
+        today = datetime.now().date()
+        last_date = user['last_image_date']
+        
+        if last_date != today:
+            # Сбрасываем счётчик
+            result = await conn.execute(
+                """
+                UPDATE users 
+                SET images_generated_today = 1,
+                    last_image_date = CURRENT_DATE
+                WHERE id = $1
+                """,
                 telegram_id
             )
-            
-            if not user:
-                return False
-            
-            today = datetime.now().date()
-            last_date = user['last_image_date']
-            
-            if last_date != today:
-                # Сбрасываем счётчик
-                result = await conn.execute(
-                    """
-                    UPDATE users 
-                    SET images_generated_today = 1,
-                        last_image_date = CURRENT_DATE
-                    WHERE id = $1
-                    """,
-                    telegram_id
-                )
-            else:
-                # Увеличиваем счётчик
-                result = await conn.execute(
-                    """
-                    UPDATE users 
-                    SET images_generated_today = images_generated_today + 1
-                    WHERE id = $1
-                    """,
-                    telegram_id
-                )
-            
-            return result == "UPDATE 1"
+        else:
+            # Увеличиваем счётчик
+            result = await conn.execute(
+                """
+                UPDATE users 
+                SET images_generated_today = images_generated_today + 1
+                WHERE id = $1
+                """,
+                telegram_id
+            )
+        
+        return result == "UPDATE 1"
 
     # ==================== СЕССИИ ====================
 
@@ -458,17 +528,30 @@ class Database:
                 dish_name, recipe_hash, image_url, backend, file_size
             )
 
-    # ==================== АДМИНКА - СТАТИСТИКА И ГРАФИКИ ====================
+    # ==================== АДМИНКА - СТАТИСТИКА ====================
 
     async def get_stats(self) -> Dict:
-        """Общая статистика базы данных"""
+        """Общая статистика базы данных через SQL функцию"""
         async with self.pool.acquire() as conn:
+            try:
+                result = await conn.fetchrow("SELECT * FROM get_bot_stats()")
+                if result:
+                    return {
+                        "users": result['total_users'],
+                        "active_sessions": result['active_sessions'],
+                        "saved_recipes": result['total_recipes'],
+                        "favorites": result['favorite_recipes'],
+                        "active_this_week": result['active_week']
+                    }
+            except Exception as e:
+                logger.warning(f"Функция get_bot_stats не найдена: {e}")
+            
+            # Fallback
             users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
             sessions_count = await conn.fetchval("SELECT COUNT(*) FROM sessions WHERE state IS NOT NULL")
             recipes_count = await conn.fetchval("SELECT COUNT(*) FROM recipes")
             favorites_count = await conn.fetchval("SELECT COUNT(*) FROM recipes WHERE is_favorite = TRUE")
             
-            # Активные за неделю
             week_ago = datetime.now() - timedelta(days=7)
             active_week = await conn.fetchval(
                 "SELECT COUNT(DISTINCT user_id) FROM recipes WHERE created_at > $1",
@@ -539,13 +622,11 @@ class Database:
     async def get_category_stats(self) -> List[Dict]:
         """Статистика по категориям блюд"""
         async with self.pool.acquire() as conn:
-            # Определяем категории из названий блюд (простая эвристика)
             recipes = await conn.fetch("""
                 SELECT dish_name FROM recipes
                 WHERE created_at > NOW() - INTERVAL '30 days'
             """)
             
-            # Словарь для определения категорий по ключевым словам
             category_keywords = {
                 "soup": ["суп", "борщ", "щи", "солянка", "харчо", "бульон"],
                 "main": ["жарен", "тушен", "запечен", "гриль", "котлет", "стейк", "плов", "паста"],
@@ -565,14 +646,13 @@ class Database:
                         category_counts[category] += 1
                         break
             
-            # Преобразуем в список и сортируем
             result = []
             for category, count in category_counts.items():
                 if count > 0:
                     result.append({"category": category, "count": count})
             
             result.sort(key=lambda x: x["count"], reverse=True)
-            return result[:5]  # Только топ-5
+            return result[:5]
 
     async def get_top_users(self, limit: int = 3) -> List[Dict]:
         """Топ-3 поваров по количеству рецептов"""
@@ -598,7 +678,6 @@ class Database:
     async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
         """Топ-10 продуктов за период"""
         async with self.pool.acquire() as conn:
-            # Определяем период
             if period == 'week':
                 time_filter = datetime.now() - timedelta(days=7)
             elif period == 'month':
@@ -606,13 +685,11 @@ class Database:
             else:
                 time_filter = datetime.now() - timedelta(days=365)
             
-            # Получаем все продукты за период
             recipes = await conn.fetch(
                 "SELECT products_used FROM recipes WHERE created_at > $1 AND products_used IS NOT NULL",
                 time_filter
             )
             
-            # Парсим продукты
             ingredient_counts = {}
             
             for recipe in recipes:
@@ -620,17 +697,14 @@ class Database:
                 if not products_text:
                     continue
                 
-                # Разбиваем по запятым, точкам с запятой, переносам
                 ingredients = re.split(r'[,;\n]', products_text.lower())
                 
                 for ingredient in ingredients:
                     ingredient = ingredient.strip()
-                    # Убираем числа и единицы измерения
                     ingredient = re.sub(r'\d+', '', ingredient)
                     ingredient = re.sub(r'\b(г|кг|мл|л|шт|штук|штука)\b', '', ingredient)
                     ingredient = ingredient.strip()
                     
-                    # Пропускаем короткие и служебные слова
                     if len(ingredient) < 3:
                         continue
                     if ingredient in ['и', 'или', 'для', 'по', 'на', 'в', 'из']:
@@ -638,7 +712,6 @@ class Database:
                     
                     ingredient_counts[ingredient] = ingredient_counts.get(ingredient, 0) + 1
             
-            # Сортируем и возвращаем топ
             sorted_ingredients = sorted(
                 ingredient_counts.items(), 
                 key=lambda x: x[1], 
@@ -670,9 +743,8 @@ class Database:
     async def get_random_fact(self) -> str:
         """Генерирует случайный факт из статистики"""
         async with self.pool.acquire() as conn:
-            # Разные виды фактов
+            import random
             facts_queries = [
-                # Самое популярное блюдо
                 """
                 SELECT dish_name, COUNT(*) as cnt
                 FROM recipes
@@ -680,7 +752,6 @@ class Database:
                 ORDER BY cnt DESC
                 LIMIT 1
                 """,
-                # Самый активный день недели
                 """
                 SELECT 
                     TO_CHAR(created_at, 'Day') as day_name,
@@ -691,7 +762,6 @@ class Database:
                 ORDER BY cnt DESC
                 LIMIT 1
                 """,
-                # Общее количество рецептов за неделю
                 """
                 SELECT COUNT(*) as cnt
                 FROM recipes
@@ -699,14 +769,12 @@ class Database:
                 """,
             ]
             
-            import random
             query = random.choice(facts_queries)
             result = await conn.fetchrow(query)
             
             if not result:
                 return "🎲 Пока недостаточно данных для генерации фактов"
             
-            # Формируем текст факта
             if 'dish_name' in result.keys():
                 return f"🍽️ Самое популярное блюдо за всё время: <b>{result['dish_name']}</b> ({result['cnt']} запросов)"
             elif 'day_name' in result.keys():
@@ -728,16 +796,25 @@ class Database:
     # ==================== АДМИНИСТРАТИВНЫЕ ====================
 
     async def cleanup_old_sessions(self, days_old: int = 7):
-        """Удаляем старые сессии"""
+        """Удаляем старые сессии через SQL функцию"""
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                """
-                DELETE FROM sessions 
-                WHERE updated_at < NOW() - INTERVAL '1 day' * $1
-                """,
-                days_old
-            )
-            logger.info(f"🧹 Удалены старые сессии: {result}")
+            try:
+                deleted = await conn.fetchval(
+                    "SELECT cleanup_old_sessions($1)",
+                    days_old
+                )
+                logger.info(f"🧹 Удалены старые сессии: {deleted} записей")
+            except Exception as e:
+                logger.warning(f"Функция cleanup_old_sessions не найдена: {e}")
+                # Fallback
+                result = await conn.execute(
+                    """
+                    DELETE FROM sessions 
+                    WHERE updated_at < NOW() - INTERVAL '1 day' * $1
+                    """,
+                    days_old
+                )
+                logger.info(f"🧹 Удалены старые сессии: {result}")
 
     async def cleanup_old_image_cache(self, days_old: int = 30):
         """Очистка старого кеша изображений"""
@@ -753,3 +830,4 @@ class Database:
 
 # Глобальный экземпляр
 db = Database()
+[file content end]

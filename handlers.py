@@ -250,6 +250,72 @@ async def cmd_admin(message: Message):
     text = "📊 <b>Админская панель</b>\n\nВыберите действие:"
     await message.answer(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
+# --- ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ---
+
+async def handle_text(message: Message):
+    """Обработка текстовых сообщений"""
+    user_id = message.from_user.id
+    text = message.text.strip()
+    
+    # Проверяем на запрос рецепта
+    if text.lower().startswith("дай рецепт") or text.lower().startswith("рецепт"):
+        await handle_direct_recipe(message, text)
+    else:
+        await process_products_input(message, user_id, text)
+
+async def handle_direct_recipe(message: Message, text: str):
+    """Обработка прямого запроса рецепта из текста"""
+    user_id = message.from_user.id
+    
+    # Извлекаем название блюда
+    dish_name = text.lower().replace("дай рецепт", "").replace("рецепт", "").strip()
+    dish_name = dish_name.strip(":,-. ")
+    
+    if len(dish_name) < 3:
+        await message.answer("Название блюда слишком короткое.", parse_mode="HTML")
+        return
+
+    wait = await message.answer(f"⚡️ Ищу: <b>{dish_name}</b>...", parse_mode="HTML")
+    try:
+        recipe = await groq_service.generate_freestyle_recipe(dish_name)
+        await wait.delete()
+        
+        await state_manager.set_current_dish(user_id, dish_name)
+        await state_manager.set_state(user_id, "recipe_sent")
+        
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
+        
+        # Проверяем лимит изображений для кнопки
+        can_generate, remaining, limit = await database.check_image_limit(user_id)
+        
+        await message.answer(
+            recipe, 
+            reply_markup=get_recipe_keyboard(recipe_id, False, remaining),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await wait.delete()
+        logger.error(f"Ошибка генерации рецепта: {e}")
+        await message.answer("❌ Ошибка генерации рецепта.")
+
+async def process_products_input(message: Message, user_id: int, products_text: str):
+    """Обработка ввода продуктов"""
+    try:
+        await state_manager.add_products(user_id, products_text)
+        current_products = state_manager.get_products(user_id)
+        
+        text = (
+            f"✅ Продукты сохранены!\n\n"
+            f"🛒 <b>Текущий набор:</b> {current_products}\n\n"
+            f"Выберите действие:"
+        )
+        
+        await message.answer(text, reply_markup=get_confirmation_keyboard(), parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки продуктов: {e}")
+        await message.answer("❌ Ошибка обработки продуктов")
+
 # --- ОБРАБОТКА ГОЛОСОВЫХ СООБЩЕНИЙ (WHISPER 3 TURBO) ---
 
 async def handle_voice(message: Message):
@@ -329,6 +395,286 @@ async def handle_direct_recipe_from_voice(message: Message, recognized_text: str
         logger.error(f"Ошибка генерации рецепта: {e}")
         await message.answer("❌ Ошибка генерации рецепта.")
 
+# --- CALLBACK ХЭНДЛЕРЫ ---
+
+async def handle_delete_msg(callback: CallbackQuery):
+    """Удаление сообщения"""
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    await callback.answer()
+
+async def handle_action_add_more(callback: CallbackQuery):
+    """Кнопка '➕ Добавить продукты'"""
+    await callback.message.edit_text(
+        "✏️ Напишите или отправьте голосовым дополнительные продукты:"
+    )
+    await callback.answer()
+
+async def handle_action_cook(callback: CallbackQuery):
+    """Кнопка '👨‍🍳 Готовить (Категории)'"""
+    user_id = callback.from_user.id
+    products = state_manager.get_products(user_id)
+    
+    if not products:
+        await callback.answer("❌ Сначала добавьте продукты", show_alert=True)
+        return
+    
+    wait = await callback.message.edit_text(
+        f"🍳 Анализирую продукты: <b>{products}</b>\n\n"
+        f"🔍 Ищу подходящие категории...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        categories = await groq_service.suggest_categories(products)
+        
+        if not categories:
+            await wait.edit_text(
+                "❌ Не удалось определить категории.\n\n"
+                "Попробуйте другие продукты или добавьте больше ингредиентов."
+            )
+            return
+        
+        await wait.edit_text(
+            f"✅ На основе ваших продуктов: <b>{products}</b>\n\n"
+            f"🍽️ <b>Выберите категорию:</b>",
+            reply_markup=get_categories_keyboard(categories),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка определения категорий: {e}")
+        await wait.edit_text("❌ Ошибка определения категорий")
+    
+    await callback.answer()
+
+async def handle_category_selection(callback: CallbackQuery):
+    """Выбор категории"""
+    user_id = callback.from_user.id
+    category = callback.data.replace("cat_", "")
+    
+    products = state_manager.get_products(user_id)
+    
+    if not products:
+        await callback.answer("❌ Сначала добавьте продукты", show_alert=True)
+        return
+    
+    wait = await callback.message.edit_text(
+        f"🔍 Ищу блюда в категории: <b>{CATEGORY_MAP.get(category, category)}</b>\n\n"
+        f"📝 Из продуктов: <b>{products}</b>",
+        parse_mode="HTML"
+    )
+    
+    try:
+        dishes = await groq_service.suggest_dishes(products, category)
+        
+        if not dishes:
+            await wait.edit_text(
+                f"❌ Не нашлось блюд в категории '{CATEGORY_MAP.get(category, category)}'.\n\n"
+                f"Попробуйте другую категорию или добавьте больше продуктов."
+            )
+            return
+        
+        state_manager.set_dishes_list(user_id, dishes)
+        
+        dishes_text = "\n".join([f"{i+1}. {dish['name']}" for i, dish in enumerate(dishes)])
+        
+        await wait.edit_text(
+            f"🍽️ <b>Доступные блюда:</b>\n\n{dishes_text}\n\n"
+            f"Выберите блюдо для получения рецепта:",
+            reply_markup=get_dishes_keyboard(dishes),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка поиска блюд: {e}")
+        await wait.edit_text("❌ Ошибка поиска блюд")
+    
+    await callback.answer()
+
+async def handle_dish_selection(callback: CallbackQuery):
+    """Выбор блюда"""
+    user_id = callback.from_user.id
+    dish_index = int(callback.data.replace("dish_", ""))
+    
+    dishes = state_manager.get_dishes_list(user_id)
+    if not dishes or dish_index >= len(dishes):
+        await callback.answer("❌ Блюдо не найдено", show_alert=True)
+        return
+    
+    selected_dish = dishes[dish_index]
+    products = state_manager.get_products(user_id)
+    
+    wait = await callback.message.edit_text(
+        f"⚡️ Готовлю рецепт: <b>{selected_dish['name']}</b>\n\n"
+        f"📝 Из продуктов: <b>{products}</b>",
+        parse_mode="HTML"
+    )
+    
+    try:
+        recipe = await groq_service.generate_recipe(selected_dish['name'], products, selected_dish.get('category', 'main'))
+        await wait.delete()
+        
+        await state_manager.set_current_dish(user_id, selected_dish['name'])
+        await state_manager.set_state(user_id, "recipe_sent")
+        
+        recipe_id = await state_manager.save_recipe_to_history(user_id, selected_dish['name'], recipe)
+        
+        # Проверяем лимит изображений для кнопки
+        can_generate, remaining, limit = await database.check_image_limit(user_id)
+        
+        await callback.message.answer(
+            recipe, 
+            reply_markup=get_recipe_keyboard(recipe_id, False, remaining),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await wait.delete()
+        logger.error(f"Ошибка генерации рецепта: {e}")
+        await callback.message.answer("❌ Ошибка генерации рецепта")
+    
+    await callback.answer()
+
+async def handle_repeat_recipe(callback: CallbackQuery):
+    """Кнопка '🔄 Другой вариант'"""
+    user_id = callback.from_user.id
+    dish_name = state_manager.get_current_dish(user_id)
+    products = state_manager.get_products(user_id)
+    
+    if not dish_name:
+        await callback.answer("❌ Сначала выберите блюдо", show_alert=True)
+        return
+    
+    wait = await callback.message.edit_text(
+        f"⚡️ Готовлю другой вариант: <b>{dish_name}</b>",
+        parse_mode="HTML"
+    )
+    
+    try:
+        recipe = await groq_service.generate_recipe(dish_name, products, 'main')
+        await wait.delete()
+        
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
+        
+        # Проверяем лимит изображений для кнопки
+        can_generate, remaining, limit = await database.check_image_limit(user_id)
+        
+        await callback.message.answer(
+            recipe, 
+            reply_markup=get_recipe_keyboard(recipe_id, False, remaining),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await wait.delete()
+        logger.error(f"Ошибка генерации рецепта: {e}")
+        await callback.message.answer("❌ Ошибка генерации рецепта")
+    
+    await callback.answer()
+
+async def handle_back_to_categories(callback: CallbackQuery):
+    """Кнопка '⬅️ Вернуться к категориям'"""
+    user_id = callback.from_user.id
+    products = state_manager.get_products(user_id)
+    
+    if not products:
+        await callback.answer("❌ Сначала добавьте продукты", show_alert=True)
+        return
+    
+    wait = await callback.message.edit_text(
+        f"🔍 Ищу подходящие категории для продуктов: <b>{products}</b>",
+        parse_mode="HTML"
+    )
+    
+    try:
+        categories = await groq_service.suggest_categories(products)
+        
+        if not categories:
+            await wait.edit_text(
+                "❌ Не удалось определить категории.\n\n"
+                "Попробуйте другие продукты или добавьте больше ингредиентов."
+            )
+            return
+        
+        await wait.edit_text(
+            f"✅ На основе ваших продуктов: <b>{products}</b>\n\n"
+            f"🍽️ <b>Выберите категорию:</b>",
+            reply_markup=get_categories_keyboard(categories),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка определения категорий: {e}")
+        await wait.edit_text("❌ Ошибка определения категорий")
+    
+    await callback.answer()
+
+async def handle_restart(callback: CallbackQuery):
+    """Кнопка '🗑 Сброс'"""
+    user_id = callback.from_user.id
+    await state_manager.clear_session(user_id)
+    
+    await callback.message.edit_text(
+        "✅ Сессия сброшена!\n\n"
+        "✏️ Отправьте новые продукты для начала."
+    )
+    await callback.answer()
+
+async def handle_fav_add(callback: CallbackQuery):
+    """Добавление в избранное"""
+    user_id = callback.from_user.id
+    recipe_id = int(callback.data.replace("fav_add_", ""))
+    
+    try:
+        success = await database.add_to_favorites(user_id, recipe_id)
+        
+        if success:
+            await callback.answer("✅ Добавлено в избранное!", show_alert=True)
+        else:
+            await callback.answer("❌ Уже в избранном", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Ошибка добавления в избранное: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_fav_view(callback: CallbackQuery):
+    """Просмотр избранного рецепта"""
+    recipe_id = int(callback.data.replace("fav_", ""))
+    
+    try:
+        recipe = await database.get_favorite_recipe(recipe_id)
+        
+        if not recipe:
+            await callback.answer("❌ Рецепт не найден", show_alert=True)
+            return
+        
+        # Проверяем лимит изображений для кнопки
+        can_generate, remaining, limit = await database.check_image_limit(callback.from_user.id)
+        
+        await callback.message.edit_text(
+            recipe['recipe_text'],
+            reply_markup=get_recipe_keyboard(recipe_id, recipe.get('image_url') is not None, remaining),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения избранного: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_clear_my_history(callback: CallbackQuery):
+    """Очистка истории пользователя"""
+    user_id = callback.from_user.id
+    
+    try:
+        await database.clear_user_history(user_id)
+        await callback.answer("✅ История очищена!", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка очистки истории: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
 # --- ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ И КАРТОЧЕК ---
 
 async def handle_generate_image(callback: CallbackQuery):
@@ -374,13 +720,21 @@ async def handle_generate_image(callback: CallbackQuery):
         # Получаем описание блюда из рецепта
         dish_desc = recipe[:200]  # Берем первые 200 символов рецепта
         
-        # Генерация через Pollinations.ai
-        image_data = await pollinations_service.generate_image(dish_name, dish_desc)
+        # Генерация через Pollinations.ai с ретраями
+        image_data = await pollinations_service.generate_image_with_retry(
+            dish_name, 
+            dish_desc,
+            max_retries=2
+        )
         
         if not image_data:
             await wait.edit_text(
                 "❌ Не удалось сгенерировать изображение.\n\n"
-                "Попробуйте позже или выберите другое блюдо."
+                "Возможные причины:\n"
+                "• Сервис генерации временно недоступен\n"
+                "• Превышен лимит запросов\n"
+                "• Проблема с API ключом\n\n"
+                "Попробуйте позже или свяжитесь с администратором."
             )
             return
         
@@ -425,11 +779,11 @@ async def handle_generate_image(callback: CallbackQuery):
         logger.info(f"✅ Изображение отправлено: {dish_name} ({backend})")
         
     except Exception as e:
+        logger.error(f"Ошибка генерации изображения: {e}")
         await wait.edit_text(
             "❌ Произошла ошибка при генерации изображения.\n\n"
-            "Попробуйте позже."
+            "Проверьте настройки API ключа или попробуйте позже."
         )
-        logger.error(f"Критическая ошибка генерации изображения: {e}", exc_info=True)
 
 async def handle_create_card(callback: CallbackQuery):
     """Кнопка '📤 Поделиться рецептом' - генерация PNG карточки"""
@@ -527,7 +881,17 @@ async def handle_admin_random_fact(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
     await callback.answer()
 
-# ... остальные хендлеры из оригинального handlers.py ...
+async def handle_admin_broadcast(callback: CallbackQuery):
+    """Админка: Рассылка"""
+    await callback.message.edit_text(
+        "📢 <b>Рассылка сообщений</b>\n\n"
+        "Отправьте сообщение в формате:\n"
+        "<code>#broadcast\nВаш текст рассылки</code>\n\n"
+        "Сообщение будет отправлено всем пользователям бота.",
+        parse_mode="HTML",
+        reply_markup=get_admin_keyboard()
+    )
+    await callback.answer()
 
 # --- РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ---
 
@@ -547,6 +911,16 @@ def register_handlers(dp: Dispatcher):
     
     # Callback хендлеры
     dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
+    dp.callback_query.register(handle_action_add_more, F.data == "action_add_more")
+    dp.callback_query.register(handle_action_cook, F.data == "action_cook")
+    dp.callback_query.register(handle_category_selection, F.data.startswith("cat_"))
+    dp.callback_query.register(handle_dish_selection, F.data.startswith("dish_"))
+    dp.callback_query.register(handle_repeat_recipe, F.data == "repeat_recipe")
+    dp.callback_query.register(handle_back_to_categories, F.data == "back_to_categories")
+    dp.callback_query.register(handle_restart, F.data == "restart")
+    dp.callback_query.register(handle_fav_add, F.data.startswith("fav_add_"))
+    dp.callback_query.register(handle_fav_view, F.data.startswith("fav_"))
+    dp.callback_query.register(handle_clear_my_history, F.data == "clear_my_history")
     dp.callback_query.register(handle_generate_image, F.data == "gen_image")
     dp.callback_query.register(handle_create_card, F.data == "create_card")
     dp.callback_query.register(handle_admin_stats, F.data == "admin_stats")
@@ -554,6 +928,4 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_admin_top_ingredients, F.data == "admin_top_ingredients")
     dp.callback_query.register(handle_admin_top_dishes, F.data == "admin_top_dishes")
     dp.callback_query.register(handle_admin_random_fact, F.data == "admin_random_fact")
-    
-    # Остальные callback хендлеры (из оригинального handlers.py)
-    # ... нужно добавить остальные хендлеры ...
+    dp.callback_query.register(handle_admin_broadcast, F.data == "admin_broadcast")

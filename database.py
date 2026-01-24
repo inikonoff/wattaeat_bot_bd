@@ -1,10 +1,10 @@
-import asyncpg
+﻿import asyncpg
 from typing import List, Dict, Any, Optional
 import json
 import logging
 import re
 from datetime import datetime, timedelta
-from config import DATABASE_URL
+from config import DATABASE_URL, DAILY_IMAGE_LIMIT_NORMAL, DAILY_IMAGE_LIMIT_ADMIN, ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,6 @@ class Database:
             if len(tables) < 3:
                 logger.warning("⚠️  Некоторые таблицы отсутствуют!")
                 logger.warning(f"Найдены таблицы: {found_tables}")
-            
-            if 'image_cache' not in found_tables:
-                logger.info("ℹ️  Таблица image_cache отсутствует (это нормально для первого запуска)")
 
     # ==================== ПОЛЬЗОВАТЕЛИ ====================
 
@@ -71,13 +68,19 @@ class Database:
             )
             
             if not user:
+                # Определяем лимит: безлимит для админа, обычный для других
+                daily_limit = DAILY_IMAGE_LIMIT_ADMIN if str(telegram_id) in ADMIN_IDS else DAILY_IMAGE_LIMIT_NORMAL
+                
                 user = await conn.fetchrow(
                     """
-                    INSERT INTO users (id, username, first_name, last_name, language)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO users (
+                        id, username, first_name, last_name, language, 
+                        daily_image_limit, last_image_date
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE)
                     RETURNING *
                     """,
-                    telegram_id, username, first_name, last_name, language
+                    telegram_id, username, first_name, last_name, language, daily_limit
                 )
                 logger.info(f"👤 Создан новый пользователь: {telegram_id}")
             else:
@@ -110,6 +113,98 @@ class Database:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT id FROM users ORDER BY id")
             return [row['id'] for row in rows]
+
+    # ==================== ЛИМИТЫ ИЗОБРАЖЕНИЙ ====================
+
+    async def check_image_limit(self, telegram_id: int) -> tuple[bool, int, int]:
+        """
+        Проверяет лимит генерации изображений
+        
+        Returns:
+            tuple[can_generate, remaining, limit]
+        """
+        async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                """
+                SELECT 
+                    daily_image_limit,
+                    images_generated_today,
+                    last_image_date
+                FROM users 
+                WHERE id = $1
+                """,
+                telegram_id
+            )
+            
+            if not user:
+                return False, 0, 0
+            
+            limit = user['daily_image_limit']
+            
+            # Безлимит для админа
+            if limit == -1:
+                return True, -1, -1
+            
+            # Проверяем дату
+            today = datetime.now().date()
+            last_date = user['last_image_date']
+            
+            # Если дата не сегодня - сбрасываем счётчик
+            if last_date != today:
+                await conn.execute(
+                    """
+                    UPDATE users 
+                    SET images_generated_today = 0,
+                        last_image_date = CURRENT_DATE
+                    WHERE id = $1
+                    """,
+                    telegram_id
+                )
+                remaining = limit
+            else:
+                remaining = limit - user['images_generated_today']
+            
+            can_generate = remaining > 0
+            return can_generate, remaining, limit
+
+    async def increment_image_count(self, telegram_id: int) -> bool:
+        """Увеличивает счётчик сгенерированных изображений"""
+        async with self.pool.acquire() as conn:
+            # Сначала проверяем дату
+            user = await conn.fetchrow(
+                "SELECT last_image_date FROM users WHERE id = $1",
+                telegram_id
+            )
+            
+            if not user:
+                return False
+            
+            today = datetime.now().date()
+            last_date = user['last_image_date']
+            
+            if last_date != today:
+                # Сбрасываем счётчик
+                result = await conn.execute(
+                    """
+                    UPDATE users 
+                    SET images_generated_today = 1,
+                        last_image_date = CURRENT_DATE
+                    WHERE id = $1
+                    """,
+                    telegram_id
+                )
+            else:
+                # Увеличиваем счётчик
+                result = await conn.execute(
+                    """
+                    UPDATE users 
+                    SET images_generated_today = images_generated_today + 1
+                    WHERE id = $1
+                    """,
+                    telegram_id
+                )
+            
+            return result == "UPDATE 1"
 
     # ==================== СЕССИИ ====================
 
@@ -363,65 +458,7 @@ class Database:
                 dish_name, recipe_hash, image_url, backend, file_size
             )
 
-    async def check_image_limit(self, user_id: int, is_admin: bool = False) -> tuple[bool, int]:
-        """
-        Проверяет лимит генерации изображений
-        
-        Returns:
-            (can_generate, remaining): (Можно ли генерировать, сколько осталось)
-        """
-        async with self.pool.acquire() as conn:
-            user = await conn.fetchrow(
-                "SELECT daily_image_limit, images_generated_today, last_image_date FROM users WHERE id = $1",
-                user_id
-            )
-            
-            if not user:
-                return False, 0
-            
-            # Админы без лимитов
-            if is_admin or user['daily_image_limit'] == -1:
-                return True, -1  # -1 = unlimited
-            
-            # Проверяем дату (сброс счётчика)
-            from datetime import date
-            today = date.today()
-            
-            if user['last_image_date'] != today:
-                # Новый день - сбрасываем счётчик
-                await conn.execute(
-                    "UPDATE users SET images_generated_today = 0, last_image_date = $1 WHERE id = $2",
-                    today, user_id
-                )
-                remaining = user['daily_image_limit']
-            else:
-                remaining = user['daily_image_limit'] - user['images_generated_today']
-            
-            can_generate = remaining > 0
-            return can_generate, remaining
-
-    async def increment_image_count(self, user_id: int):
-        """Увеличить счётчик сгенерированных изображений"""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE users 
-                SET images_generated_today = images_generated_today + 1,
-                    last_image_date = CURRENT_DATE
-                WHERE id = $1
-                """,
-                user_id
-            )
-
-    async def set_admin_unlimited_images(self, user_id: int):
-        """Установить безлимитную генерацию для админа"""
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE users SET daily_image_limit = -1 WHERE id = $1",
-                user_id
-            )
-
-    # ==================== АДМИНКА - СТАТИСТИКА ====================
+    # ==================== АДМИНКА - СТАТИСТИКА И ГРАФИКИ ====================
 
     async def get_stats(self) -> Dict:
         """Общая статистика базы данных"""
@@ -445,6 +482,97 @@ class Database:
                 "favorites": favorites_count,
                 "active_this_week": active_week
             }
+
+    async def get_activity_by_weekday(self) -> List[Dict]:
+        """Статистика активности по дням недели"""
+        async with self.pool.acquire() as conn:
+            activity = await conn.fetch("""
+                SELECT 
+                    TO_CHAR(created_at, 'Day') as day_name,
+                    COUNT(*) as count
+                FROM recipes
+                WHERE created_at > NOW() - INTERVAL '30 days'
+                GROUP BY TO_CHAR(created_at, 'Day')
+                ORDER BY 
+                    CASE TO_CHAR(created_at, 'Day')
+                        WHEN 'Monday' THEN 1
+                        WHEN 'Tuesday' THEN 2
+                        WHEN 'Wednesday' THEN 3
+                        WHEN 'Thursday' THEN 4
+                        WHEN 'Friday' THEN 5
+                        WHEN 'Saturday' THEN 6
+                        WHEN 'Sunday' THEN 7
+                    END
+            """)
+            
+            result = []
+            for row in activity:
+                result.append({
+                    "day": row['day_name'].strip(),
+                    "count": row['count']
+                })
+            
+            return result
+
+    async def get_daily_growth(self, days: int = 7) -> List[Dict]:
+        """Рост пользователей по дням"""
+        async with self.pool.acquire() as conn:
+            growth = await conn.fetch(f"""
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(*) as new_users
+                FROM users
+                WHERE created_at > NOW() - INTERVAL '{days} days'
+                GROUP BY DATE(created_at)
+                ORDER BY date
+            """)
+            
+            result = []
+            for row in growth:
+                result.append({
+                    "date": row['date'].strftime("%d.%m"),
+                    "count": row['new_users']
+                })
+            
+            return result
+
+    async def get_category_stats(self) -> List[Dict]:
+        """Статистика по категориям блюд"""
+        async with self.pool.acquire() as conn:
+            # Определяем категории из названий блюд (простая эвристика)
+            recipes = await conn.fetch("""
+                SELECT dish_name FROM recipes
+                WHERE created_at > NOW() - INTERVAL '30 days'
+            """)
+            
+            # Словарь для определения категорий по ключевым словам
+            category_keywords = {
+                "soup": ["суп", "борщ", "щи", "солянка", "харчо", "бульон"],
+                "main": ["жарен", "тушен", "запечен", "гриль", "котлет", "стейк", "плов", "паста"],
+                "salad": ["салат", "винегрет", "оливье"],
+                "breakfast": ["омлет", "яичниц", "блин", "каша", "сырник"],
+                "dessert": ["торт", "пирог", "десерт", "морожен", "печенье", "пирожное"],
+                "drink": ["сок", "компот", "морс", "чай", "кофе", "коктейль"],
+                "snack": ["бутерброд", "закуск", "канапе", "тапенад"]
+            }
+            
+            category_counts = {cat: 0 for cat in category_keywords}
+            
+            for recipe in recipes:
+                dish_name = recipe['dish_name'].lower()
+                for category, keywords in category_keywords.items():
+                    if any(keyword in dish_name for keyword in keywords):
+                        category_counts[category] += 1
+                        break
+            
+            # Преобразуем в список и сортируем
+            result = []
+            for category, count in category_counts.items():
+                if count > 0:
+                    result.append({"category": category, "count": count})
+            
+            result.sort(key=lambda x: x["count"], reverse=True)
+            return result[:5]  # Только топ-5
 
     async def get_top_users(self, limit: int = 3) -> List[Dict]:
         """Топ-3 поваров по количеству рецептов"""

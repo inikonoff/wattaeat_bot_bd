@@ -17,10 +17,6 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Supabase (аккаунт 2 - резервный, только storage)
-SUPABASE_IMAGES_URL = os.getenv("SUPABASE_IMAGES_URL")
-SUPABASE_IMAGES_KEY = os.getenv("SUPABASE_IMAGES_KEY")
-
 # Админы
 ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]

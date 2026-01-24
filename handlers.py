@@ -531,7 +531,7 @@ async def handle_dish_selection(callback: CallbackQuery):
         )
         
         try:
-            recipe = await groq_service.generate_recipe(selected_dish['name'], products, selected_dish.get('category', 'main'))
+            recipe = await groq_service.generate_recipe(selected_dish['name'], products)
             await wait.delete()
             
             await state_manager.set_current_dish(user_id, selected_dish['name'])
@@ -575,7 +575,7 @@ async def handle_repeat_recipe(callback: CallbackQuery):
         )
         
         try:
-            recipe = await groq_service.generate_recipe(dish_name, products, 'main')
+            recipe = await groq_service.generate_recipe(dish_name, products)
             await wait.delete()
             
             recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)

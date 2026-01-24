@@ -5,30 +5,96 @@ from database import db
 logger = logging.getLogger(__name__)
 
 class AdminService:
-    """Сервис для админских функций"""
+    """Сервис для админских функций с графиками"""
     
     MEDALS = ["🥇", "🥈", "🥉"]
     
     @staticmethod
-    def _create_bar_chart(label: str, value: int, max_value: int, width: int = 10) -> str:
-        """Создаёт ASCII бар"""
-        filled = int((value / max_value) * width) if max_value > 0 else 0
-        empty = width - filled
-        bar = "█" * filled + "░" * empty
-        return f"{label} {bar} {value}"
+    def _create_bar_chart(value: int, max_value: int, bar_length: int = 10, filled_char: str = "🟦") -> str:
+        """Создаёт эмодзи-бар для графика"""
+        if max_value == 0:
+            return "⬜" * bar_length
+        
+        filled_count = int((value / max_value) * bar_length)
+        empty_count = bar_length - filled_count
+        
+        bar = filled_char * filled_count + "⬜" * empty_count
+        return bar
     
     @staticmethod
     async def get_stats_message() -> str:
-        """Формирует сообщение с общей статистикой"""
+        """Формирует сообщение с общей статистикой и графиками"""
         try:
             stats = await db.get_stats()
             
-            text = "📊 <b>Статистика бота</b>\n\n"
+            # Получаем данные для графиков
+            activity_data = await db.get_activity_by_weekday()
+            growth_data = await db.get_daily_growth(days=7)
+            category_stats = await db.get_category_stats()
+            
+            text = "📊 <b>Статистика бота с графиками</b>\n\n"
+            
+            # Основная статистика
             text += f"👥 Всего пользователей: <b>{stats['users']}</b>\n"
             text += f"🔥 Активных за неделю: <b>{stats['active_this_week']}</b>\n"
             text += f"📱 Активных сессий: <b>{stats['active_sessions']}</b>\n"
             text += f"📝 Рецептов создано: <b>{stats['saved_recipes']}</b>\n"
-            text += f"❤️ В избранном: <b>{stats['favorites']}</b>\n"
+            text += f"❤️ В избранном: <b>{stats['favorites']}</b>\n\n"
+            
+            # График активности по дням недели
+            if activity_data:
+                text += "📈 <b>Активность по дням недели:</b>\n"
+                
+                # Находим максимальное значение для масштабирования
+                max_activity = max(item['count'] for item in activity_data) if activity_data else 1
+                
+                # Дни недели на русском
+                day_map = {
+                    'Monday': 'Пн',
+                    'Tuesday': 'Вт', 
+                    'Wednesday': 'Ср',
+                    'Thursday': 'Чт',
+                    'Friday': 'Пт',
+                    'Saturday': 'Сб',
+                    'Sunday': 'Вс'
+                }
+                
+                for item in activity_data:
+                    ru_day = day_map.get(item['day'], item['day'][:2])
+                    bar = AdminService._create_bar_chart(item['count'], max_activity, 10, "🟦")
+                    text += f"{ru_day} {bar} {item['count']}\n"
+                text += "\n"
+            
+            # График роста пользователей
+            if growth_data:
+                text += "📊 <b>Новые пользователи (7 дней):</b>\n"
+                
+                max_growth = max(item['count'] for item in growth_data) if growth_data else 1
+                
+                for item in growth_data:
+                    bar = AdminService._create_bar_chart(item['count'], max_growth, 10, "🟩")
+                    text += f"{item['date']} {bar} +{item['count']}\n"
+                text += "\n"
+            
+            # Топ категорий
+            if category_stats:
+                text += "🏆 <b>Популярные категории:</b>\n"
+                
+                max_category = max(item['count'] for item in category_stats) if category_stats else 1
+                category_names = {
+                    "soup": "🍲 Супы",
+                    "main": "🍝 Вторые", 
+                    "salad": "🥗 Салаты",
+                    "breakfast": "🍳 Завтраки",
+                    "dessert": "🍰 Десерты",
+                    "drink": "🥤 Напитки",
+                    "snack": "🥪 Закуски"
+                }
+                
+                for item in category_stats:
+                    cat_name = category_names.get(item['category'], item['category'])
+                    bar = AdminService._create_bar_chart(item['count'], max_category, 10, "🟩")
+                    text += f"{cat_name:<10} {bar} {item['count']}\n"
             
             return text
             
@@ -89,7 +155,7 @@ class AdminService:
             
             text = f"🥕 <b>Народные любимцы - Топ-10 продуктов {period_names.get(period, '')}</b>\n\n"
             
-            # Эмодзи для продуктов (простая эвристика)
+            # Эмодзи для продуктов
             emoji_map = {
                 'картофель': '🥔', 'картошка': '🥔',
                 'лук': '🧅',
@@ -161,7 +227,7 @@ class AdminService:
             return f"🎲 <b>Случайный факт</b>\n\n{fact}"
             
         except Exception as e:
-            logger.error(f"Ошибка получения факта: {e}")
+            logger.error(f"Ошибка получения факт: {e}")
             return "❌ Ошибка получения данных"
 
 # Глобальный экземпляр

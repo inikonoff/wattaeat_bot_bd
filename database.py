@@ -1,5 +1,3 @@
-[file name]: database.py (ИСПРАВЛЕННАЯ ВЕРСИЯ ДЛЯ ТРАНЗАКЦИОННОГО ПУЛЕРА)
-[file content begin]
 import asyncpg
 from typing import List, Dict, Any, Optional
 import json
@@ -830,4 +828,3 @@ class Database:
 
 # Глобальный экземпляр
 db = Database()
-[file content end]

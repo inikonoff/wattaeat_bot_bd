@@ -437,7 +437,7 @@ async def handle_action_cook(callback: CallbackQuery):
         )
         
         try:
-            categories = await groq_service.suggest_categories(products)
+            categories = await groq_service.analyze_categories(products)
             
             if not categories:
                 await wait.edit_text(
@@ -481,7 +481,7 @@ async def handle_category_selection(callback: CallbackQuery):
         )
         
         try:
-            dishes = await groq_service.suggest_dishes(products, category)
+            dishes = await groq_service.generate_dishes_list(products, category)
             
             if not dishes:
                 await wait.edit_text(
@@ -615,7 +615,7 @@ async def handle_back_to_categories(callback: CallbackQuery):
         )
         
         try:
-            categories = await groq_service.suggest_categories(products)
+            categories = await groq_service.analyze_categories(products)
             
             if not categories:
                 await wait.edit_text(

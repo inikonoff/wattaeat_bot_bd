@@ -6,6 +6,8 @@ load_dotenv()
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY")
+
 # Groq (несколько ключей для ротации)
 GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "").split(",")
 GROQ_API_KEYS = [key.strip() for key in GROQ_API_KEYS if key.strip()]

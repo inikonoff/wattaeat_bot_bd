@@ -111,7 +111,8 @@ class StateManagerDB:
         self._cache['products'][user_id] = products
         await self.save_session_to_db(user_id)
 
-    async def append_products(self, user_id: int, new_products: str):
+    async def add_products(self, user_id: int, new_products: str):
+        """Добавляет новые продукты к существующим (метод, который отсутствовал)"""
         current = self._cache['products'].get(user_id)
         if current:
             self._cache['products'][user_id] = f"{current}, {new_products}"
@@ -148,6 +149,14 @@ class StateManagerDB:
         await self.save_session_to_db(user_id)
 
     def get_generated_dishes(self, user_id: int) -> List[Dict]:
+        return self._cache['dishes'].get(user_id, [])
+
+    def set_dishes_list(self, user_id: int, dishes: List[Dict]):
+        """Устанавливает список блюд (метод из handlers.py)"""
+        self._cache['dishes'][user_id] = dishes
+
+    def get_dishes_list(self, user_id: int) -> List[Dict]:
+        """Получает список блюд (метод из handlers.py)"""
         return self._cache['dishes'].get(user_id, [])
 
     def get_generated_dish(self, user_id: int, index: int) -> Optional[str]:

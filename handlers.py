@@ -11,7 +11,6 @@ from aiogram.types import (
     CallbackQuery, BufferedInputFile, FSInputFile
 )
 
-from utils import VoiceProcessor
 from groq_service import groq_service
 from state_manager import state_manager
 from database import db as database

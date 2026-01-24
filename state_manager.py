@@ -78,9 +78,11 @@ class StateManagerDB:
     # ==================== ИСТОРИЯ ====================
 
     def get_history(self, user_id: int) -> List[Dict]:
+        """Получает историю сообщений пользователя"""
         return self._cache['history'].get(user_id, [])
 
     async def add_message(self, user_id: int, role: str, text: str):
+        """Добавляет сообщение в историю"""
         if user_id not in self._cache['history']:
             self._cache['history'][user_id] = []
         
@@ -96,23 +98,32 @@ class StateManagerDB:
         await self.save_session_to_db(user_id)
 
     def get_last_bot_message(self, user_id: int) -> Optional[str]:
+        """Получает последнее сообщение бота из истории"""
         hist = self.get_history(user_id)
+        
+        # Защита от None и пустого списка
+        if not hist:
+            return None
+        
         for msg in reversed(hist):
-            if msg["role"] == "bot":
-                return msg["text"]
+            if msg.get("role") == "bot":
+                return msg.get("text")
+        
         return None
 
     # ==================== ПРОДУКТЫ ====================
 
     def get_products(self, user_id: int) -> Optional[str]:
+        """Получает продукты пользователя"""
         return self._cache['products'].get(user_id)
 
     async def set_products(self, user_id: int, products: str):
+        """Устанавливает продукты пользователя"""
         self._cache['products'][user_id] = products
         await self.save_session_to_db(user_id)
 
     async def add_products(self, user_id: int, new_products: str):
-        """Добавляет новые продукты к существующим (метод, который отсутствовал)"""
+        """Добавляет новые продукты к существующим"""
         current = self._cache['products'].get(user_id)
         if current:
             self._cache['products'][user_id] = f"{current}, {new_products}"
@@ -124,13 +135,16 @@ class StateManagerDB:
     # ==================== СТАТУСЫ ====================
 
     def get_state(self, user_id: int) -> Optional[str]:
+        """Получает состояние пользователя"""
         return self._cache['states'].get(user_id)
 
     async def set_state(self, user_id: int, state: str):
+        """Устанавливает состояние пользователя"""
         self._cache['states'][user_id] = state
         await self.save_session_to_db(user_id)
 
     async def clear_state(self, user_id: int):
+        """Очищает состояние пользователя"""
         if user_id in self._cache['states']:
             del self._cache['states'][user_id]
         await self.save_session_to_db(user_id)
@@ -138,38 +152,45 @@ class StateManagerDB:
     # ==================== КАТЕГОРИИ И БЛЮДА ====================
 
     async def set_categories(self, user_id: int, categories: List[str]):
+        """Устанавливает категории для пользователя"""
         self._cache['categories'][user_id] = categories
         await self.save_session_to_db(user_id)
 
     def get_categories(self, user_id: int) -> List[str]:
+        """Получает категории пользователя"""
         return self._cache['categories'].get(user_id, [])
 
     async def set_generated_dishes(self, user_id: int, dishes: List[Dict]):
+        """Устанавливает сгенерированные блюда"""
         self._cache['dishes'][user_id] = dishes
         await self.save_session_to_db(user_id)
 
     def get_generated_dishes(self, user_id: int) -> List[Dict]:
+        """Получает сгенерированные блюда"""
         return self._cache['dishes'].get(user_id, [])
 
     def set_dishes_list(self, user_id: int, dishes: List[Dict]):
-        """Устанавливает список блюд (метод из handlers.py)"""
+        """Устанавливает список блюд (используется в handlers.py)"""
         self._cache['dishes'][user_id] = dishes
 
     def get_dishes_list(self, user_id: int) -> List[Dict]:
-        """Получает список блюд (метод из handlers.py)"""
+        """Получает список блюд (используется в handlers.py)"""
         return self._cache['dishes'].get(user_id, [])
 
     def get_generated_dish(self, user_id: int, index: int) -> Optional[str]:
+        """Получает блюдо по индексу"""
         dishes = self.get_generated_dishes(user_id)
         if 0 <= index < len(dishes):
             return dishes[index]['name']
         return None
 
     async def set_current_dish(self, user_id: int, dish_name: str):
+        """Устанавливает текущее блюдо"""
         self._cache['current_dish'][user_id] = dish_name
         await self.save_session_to_db(user_id)
 
     def get_current_dish(self, user_id: int) -> Optional[str]:
+        """Получает текущее блюдо"""
         return self._cache['current_dish'].get(user_id)
 
     # ==================== РЕЦЕПТЫ ====================
@@ -197,6 +218,9 @@ class StateManagerDB:
             
             # Сохраняем ID последнего рецепта
             self._cache['last_recipe_id'][user_id] = recipe_id
+            
+            # Также добавляем в историю сообщений
+            await self.add_message(user_id, "bot", recipe_text)
             
             logger.info(f"📝 Рецепт сохранён в историю: {dish_name} (ID: {recipe_id})")
             return recipe_id

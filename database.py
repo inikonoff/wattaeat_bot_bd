@@ -177,5 +177,151 @@ class Database:
                 ON CONFLICT (recipe_hash) DO UPDATE SET image_url=$3, storage_backend=$4""",
                 dish_name, recipe_hash, image_url, backend, file_size
             )
+# Добавьте эти методы в класс Database (в конец файла database.py, перед db = Database())
 
+    # --- СТАТИСТИКА ДЛЯ АДМИНКИ ---
+    
+    async def get_stats(self) -> Dict:
+        """Общая статистика бота"""
+        async with self.pool.acquire() as conn:
+            users = await conn.fetchval("SELECT COUNT(*) FROM users")
+            week_ago = datetime.now() - timedelta(days=7)
+            active_week = await conn.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM recipes WHERE created_at >= $1", 
+                week_ago
+            )
+            active_sessions = await conn.fetchval(
+                "SELECT COUNT(*) FROM sessions WHERE updated_at >= $1", 
+                week_ago
+            )
+            recipes = await conn.fetchval("SELECT COUNT(*) FROM recipes")
+            favorites = await conn.fetchval("SELECT COUNT(*) FROM recipes WHERE is_favorite = TRUE")
+            
+            return {
+                'users': users,
+                'active_this_week': active_week,
+                'active_sessions': active_sessions,
+                'saved_recipes': recipes,
+                'favorites': favorites
+            }
+    
+    async def get_activity_by_weekday(self) -> List[Dict]:
+        """Активность по дням недели"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    TO_CHAR(created_at, 'Day') as day,
+                    COUNT(*) as count
+                FROM recipes
+                WHERE created_at >= NOW() - INTERVAL '30 days'
+                GROUP BY TO_CHAR(created_at, 'Day'), EXTRACT(DOW FROM created_at)
+                ORDER BY EXTRACT(DOW FROM created_at)
+            """)
+            return [{'day': r['day'].strip(), 'count': r['count']} for r in rows]
+    
+    async def get_daily_growth(self, days: int = 7) -> List[Dict]:
+        """Рост пользователей по дням"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(*) as count
+                FROM users
+                WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+                GROUP BY DATE(created_at)
+                ORDER BY DATE(created_at) DESC
+            """, days)
+            return [{'date': r['date'].strftime('%d.%m'), 'count': r['count']} for r in rows]
+    
+    async def get_category_stats(self) -> List[Dict]:
+        """Статистика по категориям блюд"""
+        async with self.pool.acquire() as conn:
+            # Извлекаем категории из названий рецептов по ключевым словам
+            rows = await conn.fetch("""
+                SELECT 
+                    CASE 
+                        WHEN LOWER(dish_name) LIKE '%суп%' OR LOWER(dish_name) LIKE '%борщ%' THEN 'soup'
+                        WHEN LOWER(dish_name) LIKE '%салат%' THEN 'salad'
+                        WHEN LOWER(dish_name) LIKE '%десерт%' OR LOWER(dish_name) LIKE '%торт%' OR LOWER(dish_name) LIKE '%пирог%' THEN 'dessert'
+                        WHEN LOWER(dish_name) LIKE '%завтрак%' OR LOWER(dish_name) LIKE '%омлет%' OR LOWER(dish_name) LIKE '%каша%' THEN 'breakfast'
+                        WHEN LOWER(dish_name) LIKE '%напиток%' OR LOWER(dish_name) LIKE '%сок%' OR LOWER(dish_name) LIKE '%смузи%' THEN 'drink'
+                        WHEN LOWER(dish_name) LIKE '%закуск%' OR LOWER(dish_name) LIKE '%бутерброд%' THEN 'snack'
+                        ELSE 'main'
+                    END as category,
+                    COUNT(*) as count
+                FROM recipes
+                GROUP BY category
+                ORDER BY count DESC
+            """)
+            return [{'category': r['category'], 'count': r['count']} for r in rows]
+    
+    async def get_top_users(self, limit: int = 3) -> List[Dict]:
+        """Топ пользователей по количеству рецептов"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    u.id, u.username, u.first_name, u.last_name,
+                    COUNT(r.id) as recipe_count
+                FROM users u
+                LEFT JOIN recipes r ON u.id = r.user_id
+                GROUP BY u.id, u.username, u.first_name, u.last_name
+                HAVING COUNT(r.id) > 0
+                ORDER BY recipe_count DESC
+                LIMIT $1
+            """, limit)
+            return [dict(r) for r in rows]
+    
+    async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
+        """Топ продуктов"""
+        async with self.pool.acquire() as conn:
+            interval = {
+                'week': '7 days',
+                'month': '30 days',
+                'year': '365 days'
+            }.get(period, '30 days')
+            
+            rows = await conn.fetch(f"""
+                SELECT 
+                    LOWER(TRIM(ingredient)) as name,
+                    COUNT(*) as count
+                FROM (
+                    SELECT UNNEST(STRING_TO_ARRAY(products_used, ',')) as ingredient
+                    FROM recipes
+                    WHERE created_at >= NOW() - INTERVAL '{interval}'
+                    AND products_used IS NOT NULL
+                ) sub
+                GROUP BY LOWER(TRIM(ingredient))
+                ORDER BY count DESC
+                LIMIT $1
+            """, limit)
+            return [{'name': r['name'], 'count': r['count']} for r in rows]
+    
+    async def get_top_dishes(self, limit: int = 5) -> List[Dict]:
+        """Топ блюд"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    dish_name,
+                    COUNT(*) as request_count
+                FROM recipes
+                GROUP BY dish_name
+                ORDER BY request_count DESC
+                LIMIT $1
+            """, limit)
+            return [{'dish_name': r['dish_name'], 'request_count': r['request_count']} for r in rows]
+    
+    async def get_random_fact(self) -> str:
+        """Случайный факт"""
+        async with self.pool.acquire() as conn:
+            total_recipes = await conn.fetchval("SELECT COUNT(*) FROM recipes")
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+            avg = total_recipes // max(total_users, 1)
+            
+            import random
+            facts = [
+                f"🎯 За все время создано {total_recipes} рецептов!",
+                f"👥 Нас уже {total_users} пользователей!",
+                f"🔥 Средний пользователь создает {avg} рецептов",
+            ]
+            return random.choice(facts)
 db = Database()

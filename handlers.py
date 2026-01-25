@@ -255,30 +255,53 @@ async def handle_dish_selection(callback: CallbackQuery):
     
     await callback.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id, False, rem), parse_mode="HTML")
 
+# ... (импорты и начало файла без изменений) ...
+
 async def handle_generate_image(callback: CallbackQuery):
     user_id = callback.from_user.id
-    dish = await state_manager.get_current_dish(user_id)
-    can_gen, rem, lim = await database.check_image_limit(user_id)
     
+    # 1. Получаем ID рецепта (ВАЖНО ДЛЯ СОХРАНЕНИЯ В БД)
+    # Метод get_last_saved_recipe_id берет ID из памяти state_manager
+    recipe_id = await state_manager.get_last_saved_recipe_id(user_id)
+    
+    dish_name = await state_manager.get_current_dish(user_id)
+    
+    can_gen, rem, lim = await database.check_image_limit(user_id)
     if lim != -1 and rem <= 0:
         await callback.answer("❌ Лимит исчерпан", show_alert=False)
         return
 
     wait = await callback.message.answer("🎨 Рисую (Hugging Face)...")
+    
     try:
-        # Улучшенный промпт для фото из Groq
-        translated = await groq_service.translate_to_english(dish)
+        translated = await groq_service.translate_to_english(dish_name)
         img_data = await image_service.generate_image(translated)
         
         if img_data:
+            # 1. Загружаем в облако
+            filename = f"{user_id}_{int(time.time())}.jpg"
+            image_url, backend = await storage_service.upload_image(img_data, filename)
+            
+            # 2. Сохраняем в кэш
+            recipe_hash = hashlib.md5(dish_name.encode()).hexdigest() # Тут лучше бы хеш рецепта, но пока так
+            await database.save_cached_image(dish_name, recipe_hash, image_url, backend, len(img_data))
+            
+            # 3. ОБНОВЛЯЕМ ЗАПИСЬ В ТАБЛИЦЕ РЕЦЕПТОВ (ЧТОБЫ БЫЛО В ИЗБРАННОМ)
+            if recipe_id and image_url:
+                await database.update_recipe_image(recipe_id, image_url)
+            
+            # 4. Увеличиваем счетчик
             await database.increment_image_count(user_id)
-            # Тут можно добавить сохранение в storage_service и БД
+            
             await wait.delete()
-            await callback.message.answer_photo(BufferedInputFile(img_data, "img.jpg"), caption=f"🎨 {dish}")
+            await callback.message.answer_photo(BufferedInputFile(img_data, "img.jpg"), caption=f"🎨 {dish_name}")
         else:
             await wait.edit_text("❌ Ошибка генерации")
-    except:
+    except Exception as e:
+        logger.error(f"Image Error: {e}")
         await wait.edit_text("❌ Ошибка")
+
+# ... (Остальные методы без изменений) ...
 
 async def handle_create_card(callback: CallbackQuery):
     user_id = callback.from_user.id

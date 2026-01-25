@@ -163,24 +163,34 @@ async def handle_text(message: Message):
     else:
         await process_products_input(message, user_id, text)
 
+# Замените функцию handle_direct_recipe в handlers.py:
+
 async def handle_direct_recipe(message: Message, text: str):
     """Прямой поиск рецепта по названию"""
     user_id = message.from_user.id
+    
     # Очищаем "дай рецепт" и пробелы
-    dish_name = text.lower().replace("дай рецепт", "").replace("рецепт", "").strip()
+    dish_name = text.lower()
+    for phrase in ["дай рецепт", "рецепт", "дай", "покажи рецепт", "напиши рецепт"]:
+        dish_name = dish_name.replace(phrase, "")
+    dish_name = dish_name.strip()
     
     if len(dish_name) < 2:
         await message.answer("Напишите название блюда, например: <i>Дай рецепт борща</i>", parse_mode="HTML")
         return
 
-    wait = await message.answer(f"⚡️ Ищу рецепт: <b>{dish_name}</b>...", parse_mode="HTML")
+    # ИСПРАВЛЕНИЕ: Приводим к нормальному виду (первая буква заглавная)
+    dish_name_display = dish_name[0].upper() + dish_name[1:].lower()
+
+    wait = await message.answer(f"⚡️ Ищу рецепт: <b>{dish_name_display}</b>...", parse_mode="HTML")
     try:
-        recipe = await groq_service.generate_freestyle_recipe(dish_name)
+        # Генерируем рецепт с нормализованным названием
+        recipe = await groq_service.generate_freestyle_recipe(dish_name_display)
         await wait.delete()
         
-        await state_manager.set_current_dish(user_id, dish_name)
+        await state_manager.set_current_dish(user_id, dish_name_display)
         await state_manager.set_state(user_id, "recipe_sent")
-        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name_display, recipe)
         can_generate, remaining, limit = await database.check_image_limit(user_id)
         
         await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id, False, remaining), parse_mode="HTML")
@@ -369,11 +379,57 @@ async def handle_clear_my_history(c):
     await c.answer("✅ Очищено", show_alert=False)
 
 # Админка заглушки
-async def handle_admin_stats(c): await c.answer("Stats")
-async def handle_admin_top_cooks(c): await c.answer("Top Cooks")
-async def handle_admin_top_ingredients(c): await c.answer("Top Ing")
-async def handle_admin_top_dishes(c): await c.answer("Top Dishes")
-async def handle_admin_random_fact(c): await c.answer("Fact")
+# Замените заглушки админки в handlers.py:
+
+async def handle_admin_stats(callback: CallbackQuery):
+    """Показывает статистику с графиками"""
+    try:
+        text = await admin_service.get_stats_message()
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin stats error: {e}")
+        await callback.answer("❌ Ошибка загрузки статистики", show_alert=True)
+
+async def handle_admin_top_cooks(callback: CallbackQuery):
+    """Показывает топ поваров"""
+    try:
+        text = await admin_service.get_top_cooks_message()
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin top cooks error: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_admin_top_ingredients(callback: CallbackQuery):
+    """Показывает топ продуктов"""
+    try:
+        text = await admin_service.get_top_ingredients_message()
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin top ingredients error: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_admin_top_dishes(callback: CallbackQuery):
+    """Показывает топ блюд"""
+    try:
+        text = await admin_service.get_top_dishes_message()
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin top dishes error: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_admin_random_fact(callback: CallbackQuery):
+    """Показывает случайный факт"""
+    try:
+        text = await admin_service.get_random_fact_message()
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin random fact error: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 # --- REGISTER ---
 def register_handlers(dp: Dispatcher):

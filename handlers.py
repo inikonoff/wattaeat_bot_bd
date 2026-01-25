@@ -391,9 +391,10 @@ async def handle_dish_selection(callback: CallbackQuery):
         logger.error(f"Dish selection error: {e}")
 
 async def handle_generate_image(callback: CallbackQuery):
-    """Генерация изображения через Hugging Face"""
+    """Генерация изображения с использованием умного промпта"""
     user_id = callback.from_user.id
     
+    # Получаем название и полный текст рецепта
     dish_name = await state_manager.get_current_dish(user_id)
     recipe = await state_manager.get_last_bot_message(user_id)
     
@@ -407,33 +408,37 @@ async def handle_generate_image(callback: CallbackQuery):
         await callback.answer(f"❌ Лимит на сегодня исчерпан!", show_alert=True)
         return
 
-    # 2. Проверка кеша
+    # 2. Проверка кеша (по хешу текста рецепта)
     recipe_hash = hashlib.md5(recipe.encode()).hexdigest()
     try:
         cached = await database.get_cached_image(recipe_hash)
         if cached:
-            await callback.message.answer_photo(cached['image_url'], caption=f"🎨 {dish_name}")
-            await callback.answer("✅ Из кеша")
+            await callback.message.answer_photo(cached['image_url'], caption=f"🎨 {dish_name} (из архива)")
+            await callback.answer("✅ Загружено из кеша")
             return
     except Exception as e:
         logger.warning(f"Ошибка кеша: {e}")
     
-    wait = await callback.message.answer("🎨 Рисую (Hugging Face)... Это займет 10-20 сек.")
+    wait = await callback.message.answer("🎨 Анализирую рецепт и рисую... Это займет 15-20 сек.")
     await callback.answer()
     
     try:
-        # 3. Перевод промпта на английский
-        logger.info(f"Перевожу '{dish_name}' для HF...")
-        translated_prompt = await groq_service.translate_to_english(dish_name)
+        # 3. Генерируем "умный" промпт на основе РЕЦЕПТА
+        logger.info(f"Создаю визуальный промпт для: {dish_name}")
+        visual_prompt = await groq_service.create_visual_prompt(recipe)
         
-        # 4. Генерация
-        image_data = await image_service.generate_image(translated_prompt)
+        # Добавляем стилистические модификаторы для качества
+        final_prompt = f"Professional food photography, {visual_prompt}, soft studio lighting, macro shot, highly detailed, 4k."
+        logger.info(f"Final Prompt: {final_prompt}")
+        
+        # 4. Генерация через Hugging Face
+        image_data = await image_service.generate_image(final_prompt)
         
         if not image_data:
-            await wait.edit_text("❌ Сервер HF перегружен. Попробуйте позже.")
+            await wait.edit_text("❌ Сервер генерации перегружен. Попробуйте через минуту.")
             return
         
-        # 5. Загрузка в облако
+        # 5. Сохранение и отправка
         filename = f"{user_id}_{int(time.time())}.jpg"
         image_url, backend = await storage_service.upload_image(image_data, filename)
         
@@ -442,18 +447,18 @@ async def handle_generate_image(callback: CallbackQuery):
             await database.increment_image_count(user_id)
             
             await wait.delete()
-            photo = BufferedInputFile(image_data, filename="image.jpg")
+            photo = BufferedInputFile(image_data, filename="dish.jpg")
             await callback.message.answer_photo(
                 photo,
-                caption=f"🎨 <b>{dish_name}</b>",
+                caption=f"🎨 <b>{dish_name}</b>\n\n<i>Вид блюда подобран на основе ингредиентов рецепта</i>",
                 parse_mode="HTML"
             )
         else:
-            await wait.edit_text("❌ Ошибка сохранения изображения.")
+            await wait.edit_text("❌ Ошибка при сохранении фото.")
             
     except Exception as e:
         logger.error(f"Image gen error: {e}", exc_info=True)
-        await wait.edit_text("❌ Произошла ошибка.")
+        await wait.edit_text("❌ Не удалось создать изображение. Попробуйте еще раз.")
 
 async def handle_create_card(callback: CallbackQuery):
     """Создание карточки рецепта"""

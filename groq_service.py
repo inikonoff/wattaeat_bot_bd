@@ -2,7 +2,7 @@ import json
 import re
 import logging
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 
 from config import GROQ_API_KEYS, GROQ_MODEL
@@ -10,7 +10,7 @@ from config import GROQ_API_KEYS, GROQ_MODEL
 logger = logging.getLogger(__name__)
 
 class GroqService:
-    # Ваши правила из файла
+    # Ваши правила
     FLAVOR_RULES = """❗️ ПРАВИЛА СОЧЕТАЕМОСТИ:
 🎭 КОНТРАСТЫ: Жирное + Кислое, Сладкое + Солёное, Мягкое + Хрустящее.
 ✨ УСИЛЕНИЕ: Помидор + Базилик, Рыба + Укроп + Лимон, Тыква + Корица, Картофель + Лук + Укроп
@@ -83,27 +83,34 @@ class GroqService:
             sanitized = sanitized[:max_length] + "..."
         return sanitized
 
+    @staticmethod
+    def _clean_html_for_telegram(text: str) -> str:
+        """Очищает текст от неподдерживаемых Telegram тегов"""
+        # Заменяем списки
+        text = text.replace("<ul>", "").replace("</ul>", "")
+        text = text.replace("<ol>", "").replace("</ol>", "")
+        text = text.replace("<li>", "• ").replace("</li>", "\n")
+        
+        # Заменяем заголовки на жирный
+        text = re.sub(r'<h1>(.*?)</h1>', r'<b>\1</b>', text)
+        text = re.sub(r'<h2>(.*?)</h2>', r'<b>\1</b>', text)
+        text = re.sub(r'<h3>(.*?)</h3>', r'<b>\1</b>', text)
+        
+        # Убираем Markdown жирный/курсив, если он смешался с HTML
+        text = text.replace("**", "")
+        text = text.replace("##", "")
+        
+        return text
+
     async def analyze_categories(self, products: str) -> List[str]:
         """Определяет категории блюд"""
         safe_products = self._sanitize_input(products, max_length=300)
-        
-        # Логика микса
         items_count = len(safe_products.split(',')) if ',' in safe_products else len(safe_products.split())
         mix_available = items_count >= 8
 
-        prompt = f"""Ты шеф-повар. Определи категории блюд.
-🛒 ПРОДУКТЫ: {safe_products}
-📦 БАЗА (ВСЕГДА В НАЛИЧИИ): соль, сахар, вода, подсолнечное масло, специи.
-📊 Кол-во продуктов: {items_count}
-
-📚 КАТЕГОРИИ:
-- "mix" (ПОЛНЫЙ ОБЕД) — ОБЯЗАТЕЛЬНО ПЕРВЫМ, если продуктов >= 8.
-- "soup", "main", "salad", "breakfast", "dessert", "drink", "snack".
-
-🎯 ТРЕБОВАНИЯ:
-1. Возвращай ТОЛЬКО JSON ARRAY строк.
-2. Если продуктов >= 8, верни ["mix", "cat2", "cat3"...].
-3. Если меньше, верни ["main", "soup"...]."""
+        prompt = f"""Analyze products: {products}.
+        Return a JSON ARRAY of strings: ["breakfast", "soup", "main", "salad", "dessert", "drink", "snack"].
+        Example: ["main", "salad"]."""
         
         res = await self._send_groq_request(prompt, "Categorize", task_type="categorization")
         
@@ -125,20 +132,8 @@ class GroqService:
 
     async def generate_dishes_list(self, products: str, category: str) -> List[Dict[str, str]]:
         safe_products = self._sanitize_input(products)
-        
-        if category == "mix":
-            prompt = f"""📝 ЗАДАНИЕ: Составь ОДИН комплексный обед из 4-х блюд.
-🛒 ПРОДУКТЫ: {safe_products}
-🎯 JSON ARRAY: [
-  {{ "name": "Суп", "desc": "Описание..." }},
-  {{ "name": "Второе блюдо", "desc": "Описание..." }},
-  {{ "name": "Салат", "desc": "Описание..." }},
-  {{ "name": "Напиток", "desc": "Описание..." }}
-]"""
-        else:
-            prompt = f"""📝 ЗАДАНИЕ: Составь меню "{category}" (5 вариантов).
-🛒 ПРОДУКТЫ: {safe_products}
-🎯 JSON ARRAY: [{{ "name": "Название блюда", "desc": "Краткое описание на русском" }}]"""
+        prompt = f"""Suggest 5 dishes for category '{category}' using: {safe_products}.
+        Return JSON ARRAY: [{{ "name": "Название", "desc": "Описание" }}]"""
         
         res = await self._send_groq_request(prompt, "Menu", task_type="generation")
         try:
@@ -153,7 +148,6 @@ class GroqService:
     async def generate_recipe(self, dish_name: str, products: str) -> str:
         safe_dish = self._sanitize_input(dish_name)
         safe_prods = self._sanitize_input(products)
-        
         is_mix = "полный обед" in safe_dish.lower() or "+" in safe_dish
         instruction = "🍱 ПОЛНЫЙ ОБЕД ИЗ 4 БЛЮД." if is_mix else "Напиши рецепт одного блюда."
         
@@ -164,28 +158,36 @@ class GroqService:
 {self.FLAVOR_RULES}
 {instruction}
 
-🎯 ТРЕБОВАНИЯ К ЯЗЫКУ:
-- Ингредиенты: На русском языке.
-- Шаги и советы: На русском языке.
+🎯 ТРЕБОВАНИЯ К ФОРМАТУ (Telegram HTML):
+- Используй ТОЛЬКО теги <b>, <i>, <code>.
+- ЗАПРЕЩЕНО использовать <ul>, <ol>, <li>.
+- Для списков используй тире "-" или эмодзи "🔸".
 
-📋 СТРОГИЙ ФОРМАТ (HTML):
+📋 СТРОГИЙ ФОРМАТ:
 <b>{safe_dish}</b>
 
 📦 <b>Ингредиенты:</b>
-- [Название] — [количество]
+🔸 [Название] — [количество]
 
 📊 <b>Пищевая ценность на 1 порцию:</b>
-🥚 Белки: X г | 🥑 Жиры: X г | 🌾 Углеводы: X г | ⚡ Энерг. ценность: X ккал
+🥚 Белки: X г
+🥑 Жиры: X г
+🌾 Углеводы: X г
+⚡ Энерг. ценность: X ккал
 
-⏱ <b>Время:</b> X мин | 🪦 <b>Сложность:</b> [ур] | 👥 <b>Порции:</b> X
+⏱ <b>Время:</b> X мин
+🪦 <b>Сложность:</b> [ур]
+👥 <b>Порции:</b> X
 
 👨‍🍳 <b>Приготовление:</b>
 1. [шаг]
 
 💡 <b>СОВЕТ ШЕФ-ПОВАРА:</b>
-Проанализируй блюдо через триаду: ВКУС, АРОМАТ, ТЕКСТУРА. Порекомендуй ровно один ингредиент (которого нет в списке) для улучшения этой триады.
+Проанализируй блюдо через триаду: ВКУС, АРОМАТ, ТЕКСТУРА.
 """
-        return await self._send_groq_request(prompt, "Recipe", task_type="recipe")
+        raw_html = await self._send_groq_request(prompt, "Recipe", task_type="recipe")
+        # Чистим HTML перед возвратом
+        return self._clean_html_for_telegram(raw_html)
 
     async def generate_freestyle_recipe(self, dish_name: str) -> str:
         safe_dish = self._sanitize_input(dish_name)
@@ -193,15 +195,21 @@ class GroqService:
         prompt = f"""Ты креативный шеф-повар. Рецепт: "{safe_dish}"
 {self.FLAVOR_RULES}
 
-📋 СТРОГИЙ ФОРМАТ (HTML):
+🎯 ТРЕБОВАНИЯ К ФОРМАТУ (Telegram HTML):
+- Используй ТОЛЬКО теги <b>, <i>.
+- ЗАПРЕЩЕНО использовать <ul>, <ol>, <li>.
+- Для списков используй тире "-".
+
+📋 СТРОГИЙ ФОРМАТ:
 <b>{safe_dish}</b>
 
 📦 <b>Ингредиенты:</b>
-- [Название] — [количество]
+🔸 ...
 
 📊 <b>Пищевая ценность:</b> ...
-
-⏱ <b>Время:</b> X мин | 🪦 <b>Сложность:</b> ... | 👥 <b>Порции:</b> ...
+⏱ <b>Время:</b> X мин
+🪦 <b>Сложность:</b> ...
+👥 <b>Порции:</b> ...
 
 👨‍🍳 <b>Приготовление:</b>
 1. ...
@@ -209,7 +217,8 @@ class GroqService:
 💡 <b>СОВЕТ ШЕФ-ПОВАРА:</b>
 Проанализируй блюдо через триаду: ВКУС, АРОМАТ, ТЕКСТУРА.
 """
-        return await self._send_groq_request(prompt, "Recipe", task_type="freestyle")
+        raw_html = await self._send_groq_request(prompt, "Recipe", task_type="freestyle")
+        return self._clean_html_for_telegram(raw_html)
 
     async def transcribe_voice(self, audio_bytes: bytes) -> str:
         async def transcribe(client):
@@ -226,7 +235,6 @@ class GroqService:
             return f"❌ Ошибка: {str(e)[:100]}"
 
     async def translate_to_english(self, text: str) -> str:
-        # Для генерации фото просим перевести только визуальную часть
         prompt = f"""You are a food photographer assistant. 
         Describe the dish '{text}' in English for an image generation prompt. 
         Focus on visual appearance (colors, plating, steam). 
@@ -234,13 +242,36 @@ class GroqService:
         return await self._send_groq_request("Translator", prompt, temperature=0.3)
 
     async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
+        """Парсит рецепт в JSON для карточки"""
         prompt = """Parse this recipe to JSON: title, ingredients(list), time, portions, difficulty, chef_tip.
-        Return ONLY valid JSON object."""
+        Return ONLY valid JSON object. No markdown formatting."""
+        
         res = await self._send_groq_request(prompt, recipe_text, task_type="validation")
+        
         try:
             data = json.loads(self._extract_json(res))
-            if isinstance(data, list) and len(data) > 0: return data[0]
-            return data if isinstance(data, dict) else {}
-        except: return {}
+            
+            # --- ЗАЩИТА ОТ ОШИБОК ---
+            # 1. Если вернулся список - берем первый элемент
+            if isinstance(data, list):
+                if len(data) > 0: data = data[0]
+                else: return {}
+            
+            # 2. Если вернулась строка (бывает двойная упаковка json) - пробуем распарсить еще раз
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except:
+                    pass
+
+            # 3. Если все равно не словарь - возвращаем пусто
+            if not isinstance(data, dict):
+                logger.error(f"Card parse error: Expected dict, got {type(data)}")
+                return {}
+                
+            return data
+        except Exception as e:
+            logger.error(f"Card parse fatal error: {e}")
+            return {}
 
 groq_service = GroqService()

@@ -68,62 +68,24 @@ class GroqService:
         return text
 
     async def analyze_categories(self, products: str) -> List[str]:
-        """Определяет категории блюд (всегда возвращает список строк)"""
         prompt = f"""Analyze products: {products}.
         Return a JSON ARRAY of strings with suitable meal categories from this list:
         ["breakfast", "soup", "main", "salad", "dessert", "drink", "snack"].
-        Example: ["main", "salad"].
-        Do NOT return objects, ONLY strings."""
-        
+        Example: ["main", "salad"]."""
         res = await self._send_groq_request(prompt, "Categorize", task_type="categorization")
-        
         try:
             data = json.loads(self._extract_json(res))
-            clean_categories = []
-            
-            # Если вернулся список
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, str):
-                        clean_categories.append(item.lower())
-                    elif isinstance(item, dict):
-                        values = list(item.values())
-                        if values and isinstance(values[0], str):
-                            clean_categories.append(values[0].lower())
-            
-            # Если вернулся объект (бывает и такое)
-            elif isinstance(data, dict):
-                values = list(data.values())
-                if values and isinstance(values[0], list):
-                    for item in values[0]:
-                        if isinstance(item, str): clean_categories.append(item.lower())
-
-            if not clean_categories: return ["main", "soup"]
-            return clean_categories
-        except Exception as e:
-            logger.error(f"Category parsing error: {e}")
+            if isinstance(data, list): return [str(i).lower() for i in data]
             return ["main", "soup"]
+        except: return ["main", "soup"]
 
     async def generate_dishes_list(self, products: str, category: str) -> List[Dict[str, str]]:
         prompt = f"""Suggest 5 dishes for category '{category}' using: {products}.
         Return JSON ARRAY of objects: [{{"name": "Dish Name", "desc": "Short description"}}].
-        Use Russian language for names and descriptions."""
-        
+        Use Russian language."""
         res = await self._send_groq_request(prompt, "Menu", task_type="generation")
         try:
-            data = json.loads(self._extract_json(res))
-            
-            # Если это список - отлично
-            if isinstance(data, list): 
-                return data
-            
-            # Если это объект с ключом 'dishes' или подобным
-            if isinstance(data, dict):
-                for key in data:
-                    if isinstance(data[key], list):
-                        return data[key]
-                        
-            return []
+            return json.loads(self._extract_json(res))
         except: return []
 
     async def generate_recipe(self, dish_name: str, products: str) -> str:
@@ -143,39 +105,27 @@ class GroqService:
                 response_format="text",
             )
             return response
-        try:
-            return await self._make_groq_request(transcribe)
-        except Exception as e:
-            return f"❌ Ошибка: {str(e)[:100]}"
+        try: return await self._make_groq_request(transcribe)
+        except Exception as e: return f"❌ Ошибка: {str(e)[:100]}"
 
-    async def translate_to_english(self, text: str) -> str:
-        prompt = f"Translate '{text}' to English for image prompt. Output ONLY translation."
-        return await self._send_groq_request("Translator", prompt, temperature=0.3)
+    async def create_visual_prompt(self, recipe_text: str) -> str:
+        """Создает детальный английский промпт на основе текста рецепта"""
+        system_prompt = (
+            "You are a professional food stylist and photographer. "
+            "Analyze the provided recipe and create a short, vivid visual prompt in English (up to 40 words) for image generation. "
+            "Describe only the finished dish: colors, textures, garnishes, and plating. "
+            "Focus on the main ingredients mentioned in the text. Do not describe the cooking process, taste, or smell. "
+            "Output ONLY the prompt text."
+        )
+        return await self._send_groq_request(system_prompt, recipe_text, temperature=0.3)
 
     async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
-        """Парсит рецепт в JSON (гарантирует возврат Dict)"""
         prompt = """Parse this recipe to JSON: title, ingredients(list of strings), time, portions, difficulty, chef_tip.
         Return ONLY valid JSON object."""
-        
         res = await self._send_groq_request(prompt, recipe_text, task_type="validation")
-        
         try:
             data = json.loads(self._extract_json(res))
-            
-            # ИСПРАВЛЕНИЕ: Если вернулся список, берем первый элемент
-            if isinstance(data, list):
-                if len(data) > 0:
-                    data = data[0]
-                else:
-                    return {}
-            
-            # Если это не словарь, возвращаем пусто
-            if not isinstance(data, dict):
-                return {}
-                
-            return data
-        except Exception as e:
-            logger.error(f"Card parse error: {e}")
-            return {}
+            return data[0] if isinstance(data, list) else data
+        except: return {}
 
 groq_service = GroqService()

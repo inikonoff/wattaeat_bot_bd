@@ -67,10 +67,8 @@ class GroqService:
         if start != -1 and end != -1: return text[start:end+1]
         return text
 
-    # --- ИСПРАВЛЕННЫЙ МЕТОД ---
     async def analyze_categories(self, products: str) -> List[str]:
         """Определяет категории блюд (всегда возвращает список строк)"""
-        # Промпт требует строго массив строк
         prompt = f"""Analyze products: {products}.
         Return a JSON ARRAY of strings with suitable meal categories from this list:
         ["breakfast", "soup", "main", "salad", "dessert", "drink", "snack"].
@@ -81,26 +79,27 @@ class GroqService:
         
         try:
             data = json.loads(self._extract_json(res))
-            
             clean_categories = []
+            
+            # Если вернулся список
             if isinstance(data, list):
                 for item in data:
-                    # Если вернулась строка - берем её
                     if isinstance(item, str):
                         clean_categories.append(item.lower())
-                    # Если вернулся словарь {"category": "soup"} - вытаскиваем значение
                     elif isinstance(item, dict):
-                        # Берем первое значение из словаря
                         values = list(item.values())
                         if values and isinstance(values[0], str):
                             clean_categories.append(values[0].lower())
             
-            # Если пусто или бред, возвращаем дефолт
-            if not clean_categories:
-                return ["main", "soup"]
-                
+            # Если вернулся объект (бывает и такое)
+            elif isinstance(data, dict):
+                values = list(data.values())
+                if values and isinstance(values[0], list):
+                    for item in values[0]:
+                        if isinstance(item, str): clean_categories.append(item.lower())
+
+            if not clean_categories: return ["main", "soup"]
             return clean_categories
-            
         except Exception as e:
             logger.error(f"Category parsing error: {e}")
             return ["main", "soup"]
@@ -113,7 +112,17 @@ class GroqService:
         res = await self._send_groq_request(prompt, "Menu", task_type="generation")
         try:
             data = json.loads(self._extract_json(res))
-            if isinstance(data, list): return data
+            
+            # Если это список - отлично
+            if isinstance(data, list): 
+                return data
+            
+            # Если это объект с ключом 'dishes' или подобным
+            if isinstance(data, dict):
+                for key in data:
+                    if isinstance(data[key], list):
+                        return data[key]
+                        
             return []
         except: return []
 
@@ -144,11 +153,29 @@ class GroqService:
         return await self._send_groq_request("Translator", prompt, temperature=0.3)
 
     async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
-        prompt = "Parse this recipe to JSON: title, ingredients(list of strings), time, portions, difficulty, chef_tip."
+        """Парсит рецепт в JSON (гарантирует возврат Dict)"""
+        prompt = """Parse this recipe to JSON: title, ingredients(list of strings), time, portions, difficulty, chef_tip.
+        Return ONLY valid JSON object."""
+        
         res = await self._send_groq_request(prompt, recipe_text, task_type="validation")
+        
         try:
-            return json.loads(self._extract_json(res))
-        except:
+            data = json.loads(self._extract_json(res))
+            
+            # ИСПРАВЛЕНИЕ: Если вернулся список, берем первый элемент
+            if isinstance(data, list):
+                if len(data) > 0:
+                    data = data[0]
+                else:
+                    return {}
+            
+            # Если это не словарь, возвращаем пусто
+            if not isinstance(data, dict):
+                return {}
+                
+            return data
+        except Exception as e:
+            logger.error(f"Card parse error: {e}")
             return {}
 
 groq_service = GroqService()

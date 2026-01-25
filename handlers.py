@@ -644,11 +644,17 @@ async def handle_restart(callback: CallbackQuery):
     """Кнопка '🗑 Сброс'"""
     try:
         user_id = callback.from_user.id
+        
+        # Полная очистка сессии
         await state_manager.clear_session(user_id)
+        
+        # Дополнительно очищаем кеш
+        await state_manager.set_products(user_id, "")
+        await state_manager.clear_state(user_id)
         
         await callback.message.edit_text(
             "✅ Сессия сброшена!\n\n"
-            "✏️ Отправьте новые продукты для начала."
+            "✏️ Отправьте новые продукты для начала работы."
         )
         await callback.answer()
     except Exception as e:

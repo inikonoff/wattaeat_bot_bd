@@ -252,6 +252,28 @@ class StateManagerDB:
         if user_id in self._cache['broadcast_text']:
             del self._cache['broadcast_text'][user_id]
 
+    async def load_user_session(self, user_id: int) -> bool:
+    """Загружаем сессию пользователя из БД в кеш"""
+    if not self.db_connected:
+        return False
+        
+    try:
+        session = await db.get_session(user_id)
+        if session:
+            self._cache['products'][user_id] = session.get('products') or ''
+            self._cache['states'][user_id] = session.get('state') or ''
+            self._cache['categories'][user_id] = session.get('categories') or []
+            self._cache['dishes'][user_id] = session.get('generated_dishes') or []
+            self._cache['current_dish'][user_id] = session.get('current_dish') or ''
+            self._cache['history'][user_id] = session.get('history') or []
+            
+            logger.debug(f"📥 Сессия загружена из БД для user_id={user_id}")
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка загрузки сессии из БД: {e}")
+    
+    return False
+
     # ==================== ОЧИСТКА ====================
 
     async def clear_session(self, user_id: int):

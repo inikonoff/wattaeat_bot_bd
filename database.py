@@ -129,6 +129,13 @@ class Database:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM recipes WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2", telegram_id, limit)
             return [dict(r) for r in rows]
+   
+    async def update_recipe_image(self, recipe_id: int, image_url: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE recipes SET image_url = $1 WHERE id = $2",
+                image_url, recipe_id
+            )
 
     async def get_user_favorites(self, telegram_id: int) -> List[Dict]:
         async with self.pool.acquire() as conn:

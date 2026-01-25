@@ -313,32 +313,91 @@ async def handle_generate_image(callback: CallbackQuery):
 
 # ... (Остальные методы без изменений) ...
 
+# Замените функцию handle_create_card в handlers.py:
+
 async def handle_create_card(callback: CallbackQuery):
     user_id = callback.from_user.id
     dish_name = await state_manager.get_current_dish(user_id)
     recipe = await state_manager.get_last_bot_message(user_id)
     
+    if not recipe:
+        await callback.answer("❌ Рецепт не найден. Создайте новый рецепт.", show_alert=True)
+        return
+    
     wait = await callback.message.answer("📸 Создаю карточку...")
     
     try:
+        # 1. Парсим рецепт в структурированные данные
         parsed = await groq_service.parse_recipe_for_card(recipe)
-        # Генерация...
+        
+        # 2. Проверяем, что получили валидные данные
+        if not parsed or not isinstance(parsed, dict):
+            logger.error(f"Invalid parsed data: {type(parsed)}")
+            await wait.edit_text("❌ Не удалось распарсить рецепт. Попробуйте создать новый рецепт.")
+            return
+        
+        # 3. Получаем изображение блюда (если есть)
+        recipe_id = await state_manager.get_last_saved_recipe_id(user_id)
+        dish_image_data = None
+        
+        if recipe_id:
+            recipe_record = await database.get_favorite_recipe(recipe_id)
+            if recipe_record and recipe_record.get('image_url'):
+                try:
+                    # Скачиваем картинку
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(recipe_record['image_url'], timeout=10) as resp:
+                            if resp.status == 200:
+                                dish_image_data = await resp.read()
+                except Exception as e:
+                    logger.warning(f"Failed to fetch image: {e}")
+        
+        # 4. Генерируем карточку
+        logger.info(f"Generating card with data: title={parsed.get('title')}, ingredients_count={len(parsed.get('ingredients', []))}")
+        
         card_bytes = recipe_card_generator.generate_card(
-            parsed.get("title", dish_name),
-            parsed.get("ingredients", []),
-            parsed.get("time", "30"),
-            parsed.get("portions", "2"),
-            parsed.get("difficulty", "Easy"),
-            parsed.get("chef_tip", ""),
-            None # Здесь можно передать картинку если есть
+            title=parsed.get("title", dish_name or "Рецепт"),
+            ingredients=parsed.get("ingredients", ["Не указано"]),
+            time=parsed.get("time", "30 мин"),
+            portions=parsed.get("portions", "2"),
+            difficulty=parsed.get("difficulty", "Средняя"),
+            chef_tip=parsed.get("chef_tip", "Приятного аппетита!"),
+            dish_image_data=dish_image_data
         )
+        
+        # 5. Проверяем, что карточка создалась
+        if not card_bytes or len(card_bytes) < 1000:
+            logger.error("Generated card is too small or empty")
+            await wait.edit_text("❌ Ошибка генерации карточки. Попробуйте позже.")
+            return
+        
+        # 6. Отправляем
         await wait.delete()
-        await callback.message.answer_document(BufferedInputFile(card_bytes, "card.png"), caption="✅")
+        await callback.message.answer_document(
+            BufferedInputFile(card_bytes, f"recipe_{dish_name[:30]}.png"),
+            caption=f"📋 <b>{parsed.get('title', dish_name)}</b>\n\n✨ Поделитесь рецептом с друзьями!",
+            parse_mode="HTML"
+        )
+        await callback.answer("✅ Карточка готова!")
+        
     except Exception as e:
-        logger.error(f"Card error: {e}")
+        logger.error(f"Card generation error: {e}", exc_info=True)
         await wait.delete()
-        # Специальное сообщение об ошибке
-        await callback.message.answer("⚠️ Данный функционал находится в процессе тестирования. Попробуйте позже.")
+        
+        # Более подробное сообщение об ошибке
+        error_msg = "❌ Не удалось создать карточку.\n\n"
+        
+        if "cannot open resource" in str(e):
+            error_msg += "Причина: Отсутствуют шрифты.\n"
+            error_msg += "Решение: Администратор должен запустить скачивание шрифтов."
+        elif "JSON" in str(e):
+            error_msg += "Причина: Ошибка обработки рецепта.\n"
+            error_msg += "Решение: Попробуйте создать рецепт заново."
+        else:
+            error_msg += f"Причина: {str(e)[:100]}"
+        
+        await callback.message.answer(error_msg)
 
 async def handle_fav_add(callback: CallbackQuery):
     user_id = callback.from_user.id

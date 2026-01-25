@@ -220,15 +220,23 @@ class AdminService:
             return "❌ Ошибка получения данных"
     
     @staticmethod
-    async def get_random_fact_message() -> str:
-        """Случайный факт"""
-        try:
-            fact = await db.get_random_fact()
-            return f"🎲 <b>Случайный факт</b>\n\n{fact}"
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения факт: {e}")
-            return "❌ Ошибка получения данных"
+    # ИСПРАВЛЕНИЕ 2: Замените метод get_random_fact_message в admin_service.py
+
+@staticmethod
+async def get_random_fact_message() -> str:
+    """Случайный факт с обработкой ошибок"""
+    try:
+        fact = await db.get_random_fact()
+        
+        # Проверяем, что факт не пустой
+        if not fact or len(fact) < 5:
+            return "🎲 <b>Случайный факт</b>\n\nПока недостаточно данных для генерации фактов"
+        
+        return f"🎲 <b>Случайный факт</b>\n\n{fact}"
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения факта: {e}", exc_info=True)
+        return "❌ Ошибка получения данных. Попробуйте позже."
 
 # Глобальный экземпляр
 admin_service = AdminService()

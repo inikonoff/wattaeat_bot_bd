@@ -513,11 +513,11 @@ async def handle_clear_my_history(callback: CallbackQuery):
 
 # --- ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (HUGGING FACE) ---
 
+# ... (начало файла без изменений) ...
+
 async def handle_generate_image(callback: CallbackQuery):
     """Кнопка '🎨 Сгенерировать фото'"""
     user_id = callback.from_user.id
-    
-    # AWAIT HERE
     dish_name = await state_manager.get_current_dish(user_id)
     recipe = await state_manager.get_last_bot_message(user_id)
     
@@ -525,13 +525,11 @@ async def handle_generate_image(callback: CallbackQuery):
         await callback.answer("❌ Рецепт не найден")
         return
     
-    # Проверяем лимит
     can_generate, remaining, limit = await database.check_image_limit(user_id)
     if limit != -1 and remaining <= 0:
-        await callback.answer(f"❌ Лимит исчерпан! Попробуйте завтра", show_alert=True)
+        await callback.answer(f"❌ Лимит исчерпан!", show_alert=True)
         return
     
-    # Проверяем кеш
     recipe_hash = hashlib.md5(recipe.encode()).hexdigest()
     try:
         cached = await database.get_cached_image(recipe_hash)
@@ -546,14 +544,18 @@ async def handle_generate_image(callback: CallbackQuery):
     await callback.answer()
     
     try:
-        # Генерация (Используем новый image_service)
-        image_data = await image_service.generate_image(dish_name)
+        # 1. ПЕРЕВОД НА АНГЛИЙСКИЙ ДЛЯ HF
+        logger.info(f"Перевожу '{dish_name}' для HF...")
+        translated_prompt = await groq_service.translate_to_english(dish_name)
+        
+        # 2. ГЕНЕРАЦИЯ ПО АНГЛИЙСКОМУ ПРОМПТУ
+        image_data = await image_service.generate_image(translated_prompt)
         
         if not image_data:
             await wait.edit_text("❌ Сервер перегружен. Попробуйте позже.")
             return
         
-        # Загрузка на Supabase
+        # Загрузка и сохранение
         filename = f"{user_id}_{int(time.time())}.jpg"
         image_url, backend = await storage_service.upload_image(image_data, filename)
         

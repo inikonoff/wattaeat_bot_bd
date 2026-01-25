@@ -62,7 +62,7 @@ class StateManagerDB:
             return
             
         try:
-            await db.create_or_update_session(
+            result = await db.create_or_update_session(
                 telegram_id=user_id,
                 products=self._cache['products'].get(user_id),
                 state=self._cache['states'].get(user_id),
@@ -71,9 +71,10 @@ class StateManagerDB:
                 current_dish=self._cache['current_dish'].get(user_id),
                 history=self._cache['history'].get(user_id, [])[-MAX_HISTORY_MESSAGES:]
             )
-            logger.debug(f"💾 Сессия сохранена в БД для user_id={user_id}")
+            if result:
+                logger.debug(f"💾 Сессия сохранена в БД для user_id={user_id}")
         except Exception as e:
-            logger.error(f"Ошибка сохранения сессии в БД: {e}")
+            logger.error(f"Ошибка сохранения сессии в БД: {e}", exc_info=True)
 
     # ==================== ИСТОРИЯ ====================
 
@@ -84,6 +85,10 @@ class StateManagerDB:
     async def add_message(self, user_id: int, role: str, text: str):
         """Добавляет сообщение в историю"""
         if user_id not in self._cache['history']:
+            self._cache['history'][user_id] = []
+        
+        # Проверяем, что история - это список
+        if not isinstance(self._cache['history'][user_id], list):
             self._cache['history'][user_id] = []
         
         self._cache['history'][user_id].append({

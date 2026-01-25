@@ -241,7 +241,8 @@ class GroqService:
         Max 40 words. Output ONLY the description."""
         return await self._send_groq_request("Translator", prompt, temperature=0.3)
 
-    # Замените метод parse_recipe_for_card в groq_service.py:
+    
+# Замените метод parse_recipe_for_card в groq_service.py:
 
 async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
     """Парсит рецепт в JSON для карточки"""
@@ -299,7 +300,7 @@ Recipe to parse:"""
         for field in required_fields:
             if field not in data:
                 logger.warning(f"Missing field: {field}, adding default")
-                data[field] = self._get_default_value(field)
+                data[field] = GroqService._get_default_value(field)
         
         # Проверяем, что ingredients - это список
         if not isinstance(data.get('ingredients'), list):
@@ -310,10 +311,10 @@ Recipe to parse:"""
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {e}, raw response: {res[:200]}")
-        return self._get_fallback_card_data(recipe_text)
+        return GroqService._get_fallback_card_data(recipe_text)
     except Exception as e:
         logger.error(f"Card parse fatal error: {e}")
-        return self._get_fallback_card_data(recipe_text)
+        return GroqService._get_fallback_card_data(recipe_text)
 
 def _get_fallback_card_data(self, recipe_text: str) -> Dict:
     """Возвращает fallback данные если парсинг не удался"""
@@ -335,7 +336,29 @@ def _get_fallback_card_data(self, recipe_text: str) -> Dict:
         "chef_tip": "Готовьте с любовью!"
     }
 
-def _get_default_value(self, field: str) -> any:
+@staticmethod
+def _get_fallback_card_data(recipe_text: str) -> Dict:
+    """Возвращает fallback данные если парсинг не удался"""
+    # Пробуем хотя бы извлечь название из первой строки
+    lines = recipe_text.split('\n')
+    title = "Рецепт"
+    for line in lines:
+        clean_line = line.replace('<b>', '').replace('</b>', '').strip()
+        if len(clean_line) > 3 and not clean_line.startswith('📦'):
+            title = clean_line
+            break
+    
+    return {
+        "title": title,
+        "ingredients": ["Смотрите полный рецепт выше"],
+        "time": "30 мин",
+        "portions": "2",
+        "difficulty": "Средняя",
+        "chef_tip": "Готовьте с любовью!"
+    }
+
+@staticmethod
+def _get_default_value(field: str) -> any:
     """Возвращает дефолтное значение для поля"""
     defaults = {
         'title': 'Рецепт',
@@ -346,5 +369,4 @@ def _get_default_value(self, field: str) -> any:
         'chef_tip': 'Приятного аппетита!'
     }
     return defaults.get(field, 'Не указано')
-
 groq_service = GroqService()

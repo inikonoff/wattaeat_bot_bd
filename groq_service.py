@@ -241,37 +241,110 @@ class GroqService:
         Max 40 words. Output ONLY the description."""
         return await self._send_groq_request("Translator", prompt, temperature=0.3)
 
-    async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
-        """Парсит рецепт в JSON для карточки"""
-        prompt = """Parse this recipe to JSON: title, ingredients(list), time, portions, difficulty, chef_tip.
-        Return ONLY valid JSON object. No markdown formatting."""
-        
-        res = await self._send_groq_request(prompt, recipe_text, task_type="validation")
-        
-        try:
-            data = json.loads(self._extract_json(res))
-            
-            # --- ЗАЩИТА ОТ ОШИБОК ---
-            # 1. Если вернулся список - берем первый элемент
-            if isinstance(data, list):
-                if len(data) > 0: data = data[0]
-                else: return {}
-            
-            # 2. Если вернулась строка (бывает двойная упаковка json) - пробуем распарсить еще раз
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except:
-                    pass
+    # Замените метод parse_recipe_for_card в groq_service.py:
 
-            # 3. Если все равно не словарь - возвращаем пусто
-            if not isinstance(data, dict):
-                logger.error(f"Card parse error: Expected dict, got {type(data)}")
-                return {}
-                
-            return data
-        except Exception as e:
-            logger.error(f"Card parse fatal error: {e}")
-            return {}
+async def parse_recipe_for_card(self, recipe_text: str) -> Dict:
+    """Парсит рецепт в JSON для карточки"""
+    prompt = """Parse this recipe to JSON with these EXACT fields:
+{
+  "title": "Dish name",
+  "ingredients": ["ingredient 1", "ingredient 2", ...],
+  "time": "30 min",
+  "portions": "2",
+  "difficulty": "Easy",
+  "chef_tip": "One sentence tip"
+}
+
+IMPORTANT: 
+- Return ONLY valid JSON object (not array, not string)
+- No markdown formatting (no ```json```)
+- ingredients must be an array of strings
+- All values must be strings
+
+Recipe to parse:"""
+    
+    res = await self._send_groq_request(prompt, recipe_text, task_type="validation", temperature=0.2)
+    
+    try:
+        # Очищаем от markdown
+        clean_json = self._extract_json(res)
+        
+        # Пробуем распарсить
+        data = json.loads(clean_json)
+        
+        # КРИТИЧЕСКАЯ ПРОВЕРКА: если вернулась строка - пробуем еще раз
+        if isinstance(data, str):
+            logger.warning(f"Got string instead of dict, trying to parse again: {data[:100]}")
+            try:
+                data = json.loads(data)
+            except:
+                logger.error("Double JSON parse failed, returning fallback")
+                return self._get_fallback_card_data(recipe_text)
+        
+        # Если вернулся список - берем первый элемент
+        if isinstance(data, list):
+            if len(data) > 0 and isinstance(data[0], dict):
+                data = data[0]
+            else:
+                logger.error("Got list but no valid dict inside")
+                return self._get_fallback_card_data(recipe_text)
+        
+        # Финальная проверка: это точно словарь?
+        if not isinstance(data, dict):
+            logger.error(f"Final check failed: Expected dict, got {type(data)}")
+            return self._get_fallback_card_data(recipe_text)
+        
+        # Валидация обязательных полей
+        required_fields = ['title', 'ingredients', 'time', 'portions']
+        for field in required_fields:
+            if field not in data:
+                logger.warning(f"Missing field: {field}, adding default")
+                data[field] = self._get_default_value(field)
+        
+        # Проверяем, что ingredients - это список
+        if not isinstance(data.get('ingredients'), list):
+            logger.warning("Ingredients is not a list, converting")
+            data['ingredients'] = [str(data.get('ingredients', 'Не указано'))]
+        
+        return data
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e}, raw response: {res[:200]}")
+        return self._get_fallback_card_data(recipe_text)
+    except Exception as e:
+        logger.error(f"Card parse fatal error: {e}")
+        return self._get_fallback_card_data(recipe_text)
+
+def _get_fallback_card_data(self, recipe_text: str) -> Dict:
+    """Возвращает fallback данные если парсинг не удался"""
+    # Пробуем хотя бы извлечь название из первой строки
+    lines = recipe_text.split('\n')
+    title = "Рецепт"
+    for line in lines:
+        clean_line = line.replace('<b>', '').replace('</b>', '').strip()
+        if len(clean_line) > 3 and not clean_line.startswith('📦'):
+            title = clean_line
+            break
+    
+    return {
+        "title": title,
+        "ingredients": ["Смотрите полный рецепт выше"],
+        "time": "30 мин",
+        "portions": "2",
+        "difficulty": "Средняя",
+        "chef_tip": "Готовьте с любовью!"
+    }
+
+def _get_default_value(self, field: str) -> any:
+    """Возвращает дефолтное значение для поля"""
+    defaults = {
+        'title': 'Рецепт',
+        'ingredients': ['Не указано'],
+        'time': '30 мин',
+        'portions': '2',
+        'difficulty': 'Средняя',
+        'chef_tip': 'Приятного аппетита!'
+    }
+    return defaults.get(field, 'Не указано')
 
 groq_service = GroqService()

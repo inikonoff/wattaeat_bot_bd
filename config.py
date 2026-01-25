@@ -6,13 +6,14 @@ load_dotenv()
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY")
+# Hugging Face (Вместо Pollinations)
+HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 
-# Groq (несколько ключей для ротации)
+# Groq
 GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "").split(",")
 GROQ_API_KEYS = [key.strip() for key in GROQ_API_KEYS if key.strip()]
 
-# Supabase (аккаунт 1 - основной)
+# Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -22,17 +23,16 @@ ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
 
 # Настройки
-SPEECH_LANGUAGE = "ru-RU"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 MAX_HISTORY_MESSAGES = 8
 IMAGE_QUALITY = 85
-IMAGE_MAX_SIZE = 2048
+IMAGE_MAX_SIZE = 1024  # Чуть меньше для стабильности HF
 
 # Лимиты
 DAILY_IMAGE_LIMIT_NORMAL = 5
-DAILY_IMAGE_LIMIT_ADMIN = -1  # безлимит
+DAILY_IMAGE_LIMIT_ADMIN = -1
 
-# Карточки рецептов
+# Карточки
 CARD_WIDTH = 1080
 CARD_HEIGHT = 1920
 CARD_BG_COLOR = "#FFFFFF"
@@ -46,10 +46,9 @@ FONTS_DIR = "fonts"
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(FONTS_DIR, exist_ok=True)
 
-# Шрифты
+# Шрифты (имена файлов)
 FONT_BOLD = os.path.join(FONTS_DIR, "Roboto-Bold.ttf")
 FONT_MEDIUM = os.path.join(FONTS_DIR, "Roboto-Medium.ttf")
 FONT_REGULAR = os.path.join(FONTS_DIR, "Roboto-Regular.ttf")
 
-# Веб-сервер для Render
 PORT = int(os.getenv("PORT", "8080"))

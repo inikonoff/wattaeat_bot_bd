@@ -667,16 +667,24 @@ async def handle_fav_add(callback: CallbackQuery):
         user_id = callback.from_user.id
         recipe_id = int(callback.data.replace("fav_add_", ""))
         
+        logger.info(f"Попытка добавить в избранное: user={user_id}, recipe={recipe_id}")
+        
+        # Добавляем в избранное
         success = await database.add_to_favorites(user_id, recipe_id)
         
         if success:
             await callback.answer("✅ Добавлено в избранное!", show_alert=True)
+            logger.info(f"✅ Рецепт {recipe_id} добавлен в избранное пользователя {user_id}")
         else:
-            await callback.answer("❌ Уже в избранном", show_alert=True)
+            await callback.answer("⚠️ Рецепт уже в избранном", show_alert=True)
+            logger.info(f"⚠️ Рецепт {recipe_id} уже в избранном у пользователя {user_id}")
             
+    except ValueError as e:
+        logger.error(f"Ошибка парсинга recipe_id: {e}")
+        await callback.answer("❌ Неверный ID рецепта", show_alert=True)
     except Exception as e:
-        logger.error(f"Ошибка добавления в избранное: {e}")
-        await callback.answer("❌ Ошибка", show_alert=True)
+        logger.error(f"Ошибка добавления в избранное: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка при добавлении в избранное", show_alert=True)
 
 async def handle_fav_view(callback: CallbackQuery):
     """Просмотр избранного рецепта"""

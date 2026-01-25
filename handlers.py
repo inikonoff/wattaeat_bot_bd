@@ -868,6 +868,59 @@ class Database:
                 days_old
             )
             logger.info(f"🧹 Очищен кеш изображений: {result}")
+# Добавьте эту функцию В КОНЕЦ файла handlers.py
 
+# --- РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ---
+
+def register_handlers(dp: Dispatcher):
+    """Регистрирует все обработчики событий"""
+    
+    # Команды
+    dp.message.register(cmd_start, Command("start"))
+    dp.message.register(cmd_author, Command("author"))
+    dp.message.register(cmd_stats, Command("stats"))
+    dp.message.register(cmd_favorites, Command("favorites"))
+    dp.message.register(cmd_admin, Command("admin"))
+    
+    # Голосовые сообщения
+    dp.message.register(handle_voice, F.voice | F.audio)
+    
+    # Текстовые сообщения
+    dp.message.register(handle_text, F.text)
+    
+    # Callback хендлеры - основные действия
+    dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
+    dp.callback_query.register(handle_limit_exceeded, F.data == "limit_exceeded")
+    dp.callback_query.register(handle_action_add_more, F.data == "action_add_more")
+    dp.callback_query.register(handle_action_cook, F.data == "action_cook")
+    dp.callback_query.register(handle_restart, F.data == "restart")
+    
+    # Callback хендлеры - категории и блюда
+    dp.callback_query.register(handle_category_selection, F.data.startswith("cat_"))
+    dp.callback_query.register(handle_dish_selection, F.data.startswith("dish_"))
+    dp.callback_query.register(handle_back_to_categories, F.data == "back_to_categories")
+    
+    # Callback хендлеры - рецепты
+    dp.callback_query.register(handle_repeat_recipe, F.data == "repeat_recipe")
+    dp.callback_query.register(handle_generate_image, F.data == "gen_image")
+    dp.callback_query.register(handle_create_card, F.data == "create_card")
+    
+    # Callback хендлеры - избранное
+    dp.callback_query.register(handle_fav_add, F.data.startswith("fav_add_"))
+    dp.callback_query.register(handle_fav_view, F.data.startswith("fav_") & ~F.data.startswith("fav_add_"))
+    
+    # Callback хендлеры - история
+    dp.callback_query.register(handle_clear_my_history, F.data == "clear_my_history")
+    
+    # Callback хендлеры - админка
+    dp.callback_query.register(handle_admin_stats, F.data == "admin_stats")
+    dp.callback_query.register(handle_admin_top_cooks, F.data == "admin_top_cooks")
+    dp.callback_query.register(handle_admin_top_ingredients, F.data == "admin_top_ingredients")
+    dp.callback_query.register(handle_admin_top_dishes, F.data == "admin_top_dishes")
+    dp.callback_query.register(handle_admin_random_fact, F.data == "admin_random_fact")
+    dp.callback_query.register(handle_admin_broadcast, F.data == "admin_broadcast")
+    
+    logger.info("✅ Все обработчики зарегистрированы")
+    
 # Глобальный экземпляр
 db = Database()

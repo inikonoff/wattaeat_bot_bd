@@ -1,217 +1,238 @@
 import os
-import asyncio
-import aiohttp
-import aiofiles
 import textwrap
 import logging
 from io import BytesIO
+import aiohttp
+import aiofiles
 from PIL import Image, ImageDraw, ImageFont
-from config import FONTS_DIR
 
-# Константы дизайна
+# --- КОНФИГУРАЦИЯ ---
+FONTS_DIR = "fonts"
+ASSETS_DIR = "assets"  # Папка для иконок и фонов
+
+# Цвета из шаблона
+BG_COLOR = "#F2E8D5"       # Цвет пергамента
+TEXT_COLOR = "#3E2723"     # Темно-коричневый (вместо черного)
+ACCENT_COLOR = "#5D4037"   # Светлее для линий
+HIGHLIGHT_COLOR = "#2E7D32" # Оливковый (для зелени, если нужно)
+
+# Размеры
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1600
-BG_COLOR = "#FDFBF7"       
-TEXT_COLOR = "#2C2C2C"     
-ACCENT_COLOR = "#8B7355"   
 
 logger = logging.getLogger(__name__)
 
 class RecipeCardGenerator:
-    # Используем Roboto для надежности с кириллицей
+    # Используем шрифты с засечками (Serif) для стиля "Старая книга"
     FONTS_URLS = {
-        "Bold.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
-        "Regular.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf",
-        "Italic.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Italic.ttf",
-        "Medium.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Medium.ttf"
+        "Title.ttf": "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay-Bold.ttf",
+        "Body.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Regular.ttf",
+        "BodyBold.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Bold.ttf",
+        "Italic.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Italic.ttf"
     }
-    
+
     def __init__(self):
         self.fonts_loaded = False
         self.fonts = {}
-        
+        self._ensure_dirs()
+
+    def _ensure_dirs(self):
+        if not os.path.exists(FONTS_DIR): os.makedirs(FONTS_DIR)
+        if not os.path.exists(ASSETS_DIR): os.makedirs(ASSETS_DIR)
+
     def _get_font_path(self, name):
         return os.path.join(FONTS_DIR, name)
 
     async def ensure_fonts(self):
-        """Скачивает шрифты при старте бота"""
-        if not os.path.exists(FONTS_DIR):
-            os.makedirs(FONTS_DIR)
-
-        logger.info("📦 Скачивание шрифтов для карточек...")
+        """Скачивает винтажные шрифты"""
         async with aiohttp.ClientSession() as session:
             for filename, url in self.FONTS_URLS.items():
                 path = self._get_font_path(filename)
-                
-                # Если файла нет или он пустой (< 1KB)
                 if not os.path.exists(path) or os.path.getsize(path) < 1000:
-                    logger.info(f"📥 Скачиваю {filename}...")
                     try:
                         async with session.get(url) as resp:
                             if resp.status == 200:
                                 content = await resp.read()
                                 async with aiofiles.open(path, mode='wb') as f:
                                     await f.write(content)
-                            else:
-                                logger.error(f"❌ Ошибка HTTP {resp.status} для {filename}")
                     except Exception as e:
-                        logger.error(f"❌ Ошибка сети для {filename}: {e}")
-        
+                        logger.error(f"Error downloading {filename}: {e}")
         self._load_fonts()
 
     def _load_fonts(self):
-        """Загрузка шрифтов в память"""
         try:
-            self.fonts['title'] = ImageFont.truetype(self._get_font_path("Bold.ttf"), 80)
-            self.fonts['section'] = ImageFont.truetype(self._get_font_path("Bold.ttf"), 45)
-            self.fonts['main'] = ImageFont.truetype(self._get_font_path("Regular.ttf"), 38)
-            self.fonts['italic'] = ImageFont.truetype(self._get_font_path("Italic.ttf"), 38)
-            self.fonts['meta'] = ImageFont.truetype(self._get_font_path("Medium.ttf"), 32)
+            # Настройка размеров под макет
+            self.fonts['header'] = ImageFont.truetype(self._get_font_path("Title.ttf"), 90) # Огромный заголовок
+            self.fonts['subheader'] = ImageFont.truetype(self._get_font_path("Title.ttf"), 50) # "Ингредиенты"
+            self.fonts['body'] = ImageFont.truetype(self._get_font_path("Body.ttf"), 40)
+            self.fonts['body_bold'] = ImageFont.truetype(self._get_font_path("BodyBold.ttf"), 40)
+            self.fonts['italic'] = ImageFont.truetype(self._get_font_path("Italic.ttf"), 45) # Для совета
+            self.fonts['meta'] = ImageFont.truetype(self._get_font_path("Body.ttf"), 30) # Подписи к иконкам
             self.fonts_loaded = True
-            logger.info("✅ Шрифты успешно загружены")
         except Exception as e:
-            logger.error(f"❌ Критическая ошибка шрифтов: {e}")
-            # Fallback на дефолт (будут квадратики, но код не упадет)
-            default = ImageFont.load_default()
-            self.fonts = {k: default for k in ['title', 'section', 'main', 'italic', 'meta']}
+            logger.error(f"Font load error: {e}")
+            self.fonts = {k: ImageFont.load_default() for k in ['header', 'subheader', 'body', 'body_bold', 'italic', 'meta']}
             self.fonts_loaded = True
+
+    def _draw_vintage_divider(self, draw, center_x, y):
+        """Рисует декоративный разделитель, если нет картинки"""
+        # Имитация узора ---x---x---
+        width = 600
+        start_x = center_x - width // 2
+        draw.line([(start_x, y), (center_x + width // 2, y)], fill=ACCENT_COLOR, width=2)
+        # Ромбик по центру
+        s = 8
+        draw.polygon([(center_x, y-s), (center_x+s, y), (center_x, y+s), (center_x-s, y)], fill=ACCENT_COLOR)
+        # Точки по краям
+        draw.ellipse([start_x-5, y-5, start_x+5, y+5], fill=ACCENT_COLOR)
+        draw.ellipse([center_x + width//2 - 5, y-5, center_x + width//2 + 5, y+5], fill=ACCENT_COLOR)
 
     def generate_card(self, title, ingredients, time, portions, difficulty, chef_tip, dish_image_data=None):
-        if not self.fonts_loaded: 
-            self._load_fonts()
+        if not self.fonts_loaded: self._load_fonts()
 
-        img = Image.new('RGB', (CARD_WIDTH, CARD_HEIGHT), BG_COLOR)
-        draw = ImageDraw.Draw(img)
-        margin = 80
-
-        # --- 1. ЗАГОЛОВОК ---
-        # Удаляем HTML теги из заголовка если есть
-        clean_title = title.replace("<b>", "").replace("</b>", "").upper()
+        # 1. Фон (Попытка загрузить текстуру бумаги, иначе заливка)
+        bg_path = os.path.join(ASSETS_DIR, "paper_texture.jpg")
+        if os.path.exists(bg_path):
+            img = Image.open(bg_path).resize((CARD_WIDTH, CARD_HEIGHT)).convert("RGB")
+        else:
+            img = Image.new('RGB', (CARD_WIDTH, CARD_HEIGHT), BG_COLOR)
         
-        # Подбор размера шрифта
-        font_title = self.fonts['title']
-        if len(clean_title) > 30:
-            font_title = self.fonts['section'] # Поменьше
+        draw = ImageDraw.Draw(img)
+        
+        # --- ЗАГОЛОВОК ---
+        # Центрирование заголовка (UpperCase)
+        title_text = title.replace("<b>", "").replace("</b>", "").upper()
+        font_h = self.fonts['header']
+        
+        # Если заголовок длинный, уменьшаем шрифт
+        if len(title_text) > 20:
+            font_h = ImageFont.truetype(self._get_font_path("Title.ttf"), 70)
 
-        wrapped_title = textwrap.wrap(clean_title, width=20)
-        current_y = 100
+        # Разбивка на строки
+        wrapped_title = textwrap.wrap(title_text, width=25)
+        current_y = 120
         
         for line in wrapped_title:
-            bbox = draw.textbbox((0, 0), line, font=font_title)
-            text_w = bbox[2] - bbox[0]
-            draw.text(((CARD_WIDTH - text_w)//2, current_y), line, font=font_title, fill=TEXT_COLOR)
+            bbox = draw.textbbox((0, 0), line, font=font_h)
+            w = bbox[2] - bbox[0]
+            draw.text(((CARD_WIDTH - w) / 2, current_y), line, font=font_h, fill=TEXT_COLOR)
             current_y += (bbox[3] - bbox[1]) + 20
 
-        # Линия
-        draw.line([(margin, current_y + 20), (CARD_WIDTH - margin, current_y + 20)], fill=ACCENT_COLOR, width=3)
+        # Декоративный разделитель
+        self._draw_vintage_divider(draw, CARD_WIDTH // 2, current_y + 20)
         current_y += 80
 
-        # --- 2. ФОТО И ИНГРЕДИЕНТЫ ---
-        photo_width = 500
-        photo_height = 650
+        # --- ОСНОВНОЙ БЛОК (ФОТО + ИНГРЕДИЕНТЫ) ---
+        # Координаты как в макете
+        col_left_x = 100
+        col_right_x = 680
+        photo_size = 520
         
-        # Фото (Слева)
+        # 1. Фото блюда (Слева)
         if dish_image_data:
             try:
-                dish_img = Image.open(BytesIO(dish_image_data)).convert("RGB")
+                dish = Image.open(BytesIO(dish_image_data)).convert("RGB")
+                # Crop to square
+                min_side = min(dish.size)
+                left = (dish.width - min_side) / 2
+                top = (dish.height - min_side) / 2
+                dish = dish.crop((left, top, left + min_side, top + min_side))
+                dish = dish.resize((photo_size, photo_size), Image.Resampling.LANCZOS)
                 
-                # Smart Crop
-                aspect = dish_img.width / dish_img.height
-                target_aspect = photo_width / photo_height
+                img.paste(dish, (col_left_x, current_y))
                 
-                if aspect > target_aspect:
-                    new_w = int(dish_img.height * target_aspect)
-                    offset = (dish_img.width - new_w) // 2
-                    dish_img = dish_img.crop((offset, 0, offset + new_w, dish_img.height))
-                else:
-                    new_h = int(dish_img.width / target_aspect)
-                    offset = (dish_img.height - new_h) // 2
-                    dish_img = dish_img.crop((0, offset, dish_img.width, offset + new_h))
+                # Двойная рамка вокруг фото (как на фото)
+                draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], outline=TEXT_COLOR, width=2)
+                draw.rectangle([col_left_x-5, current_y-5, col_left_x+photo_size+5, current_y+photo_size+5], outline=ACCENT_COLOR, width=1)
                 
-                dish_img = dish_img.resize((photo_width, photo_height), Image.Resampling.LANCZOS)
-                img.paste(dish_img, (margin, current_y))
-                draw.rectangle([margin, current_y, margin + photo_width, current_y + photo_height], outline=ACCENT_COLOR, width=3)
             except Exception as e:
-                logger.error(f"Ошибка фото: {e}")
-                self._draw_placeholder(draw, margin, current_y, photo_width, photo_height)
+                logger.error(e)
+                draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], fill="#D7CCC8", outline=TEXT_COLOR)
+                draw.text((col_left_x+180, current_y+240), "НЕТ ФОТО", font=self.fonts['subheader'], fill=ACCENT_COLOR)
         else:
-            self._draw_placeholder(draw, margin, current_y, photo_width, photo_height)
+             draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], fill="#D7CCC8", outline=TEXT_COLOR)
 
-        # Ингредиенты (Справа)
-        ing_x = margin + photo_width + 60
-        draw.text((ing_x, current_y), "ИНГРЕДИЕНТЫ:", font=self.fonts['section'], fill=ACCENT_COLOR)
+        # 2. Ингредиенты (Справа)
+        draw.text((col_right_x, current_y), "ИНГРЕДИЕНТЫ:", font=self.fonts['subheader'], fill=TEXT_COLOR)
         
-        ing_y = current_y + 70
-        # Чистим ингредиенты от HTML и маркеров
-        clean_ingredients = []
-        for ing in ingredients[:12]:
-            clean = ing.replace("<b>", "").replace("</b>", "").replace("🔸", "").replace("•", "").strip()
-            if clean: clean_ingredients.append(clean)
-
-        for ing in clean_ingredients:
-            line = f"• {ing}"
-            wrapped_ing = textwrap.wrap(line, width=25)
+        ing_y = current_y + 80
+        clean_ings = [i.replace("<b>", "").replace("</b>", "").strip("• ") for i in ingredients[:10]]
+        
+        for ing in clean_ings:
+            # Разделяем название и количество, если возможно, для красоты (опционально)
+            # Просто печатаем список с буллитами
+            wrapped_ing = textwrap.wrap(f"- {ing}", width=22)
             for w_line in wrapped_ing:
-                draw.text((ing_x, ing_y), w_line, font=self.fonts['main'], fill=TEXT_COLOR)
+                draw.text((col_right_x, ing_y), w_line, font=self.fonts['body'], fill=TEXT_COLOR)
                 ing_y += 45
-            ing_y += 10
+            ing_y += 15
 
-        current_y += max(photo_height, (ing_y - current_y)) + 60
-
-        # --- 3. МЕТА ---
-        meta_y = current_y
-        meta_items = [f"ВРЕМЯ: {time}", f"ПОРЦИИ: {portions}", f"УРОВЕНЬ: {difficulty}"]
-        col_width = (CARD_WIDTH - 2 * margin) // 3
+        # --- ИНФО-ПАНЕЛЬ (ВРЕМЯ, ПОРЦИИ) ---
+        # Расположена под фото в макете
+        meta_y = current_y + photo_size + 40
         
-        for i, item in enumerate(meta_items):
-            x_pos = margin + (i * col_width)
-            bbox = draw.textbbox((0, 0), item, font=self.fonts['meta'])
-            text_w = bbox[2] - bbox[0]
-            draw.text((x_pos + (col_width - text_w)//2, meta_y), item, font=self.fonts['meta'], fill=ACCENT_COLOR)
+        # Пытаемся загрузить иконки, если нет - рисуем текст
+        icons_info = [
+            ("clock.png", f"ВРЕМЯ: {time}"),
+            ("chef.png", f"ПОРЦИИ: {portions}")
+        ]
+        
+        icon_x_start = col_left_x
+        for icon_file, text in icons_info:
+            icon_path = os.path.join(ASSETS_DIR, icon_file)
+            
+            # Рисуем иконку (или заглушку)
+            if os.path.exists(icon_path):
+                try:
+                    icn = Image.open(icon_path).convert("RGBA").resize((50, 50))
+                    # Накладываем иконку
+                    mask = icn.split()[3]
+                    img.paste(icn, (icon_x_start, meta_y), mask)
+                except: pass
+            else:
+                # Рисуем кружок если иконки нет
+                draw.ellipse([icon_x_start, meta_y, icon_x_start+50, meta_y+50], outline=TEXT_COLOR, width=2)
+                
+            # Текст рядом с иконкой
+            draw.text((icon_x_start + 65, meta_y + 5), text, font=self.fonts['meta'], fill=TEXT_COLOR)
+            
+            # Сдвиг вправо для следующей
+            icon_x_start += 300 # Ширина слота
 
-        current_y += 100
-
-        # --- 4. СОВЕТ ---
+        # --- СОВЕТ ШЕФА (БОКС ВНИЗУ) ---
         if chef_tip:
-            # Чистим текст совета
-            clean_tip = chef_tip.replace("<b>", "").replace("</b>", "").replace("💡", "").replace("СОВЕТ ШЕФ-ПОВАРА:", "").strip()
+            tip_box_y = max(ing_y, meta_y + 100) + 40
+            tip_margin = 100
             
-            tip_margin = margin
-            tip_y_start = current_y
+            clean_tip = chef_tip.replace("<b>", "").replace("</b>", "").replace("СОВЕТ ШЕФ-ПОВАРА:", "").strip()
             
-            tip_text = textwrap.wrap(f"«{clean_tip}»", width=50)
-            box_h = len(tip_text) * 50 + 130
+            # Заголовок бокса
+            header = "СОВЕТ ШЕФА:"
+            draw.text(((CARD_WIDTH - draw.textlength(header, font=self.fonts['subheader']))/2, tip_box_y), 
+                      header, font=self.fonts['subheader'], fill=ACCENT_COLOR)
             
-            # Проверка выхода за границы
-            if tip_y_start + box_h > CARD_HEIGHT - 80:
-                tip_text = tip_text[:3] + ["..."]
-                box_h = len(tip_text) * 50 + 130
+            # Текст совета
+            tip_lines = textwrap.wrap(clean_tip, width=50)
+            text_start_y = tip_box_y + 70
+            
+            # Рамка вокруг совета (Двойная линия как в меню)
+            box_height = len(tip_lines) * 55 + 100
+            
+            # Рисуем рамку
+            rect_coords = [tip_margin, tip_box_y - 20, CARD_WIDTH - tip_margin, tip_box_y + box_height]
+            draw.rectangle(rect_coords, outline=ACCENT_COLOR, width=3)
+            # Внутренняя тонкая рамка
+            draw.rectangle([r + 10 if i < 2 else r - 10 for i, r in enumerate(rect_coords)], outline=ACCENT_COLOR, width=1)
 
-            draw.rectangle([tip_margin, tip_y_start, CARD_WIDTH - tip_margin, tip_y_start + box_h], outline=ACCENT_COLOR, width=2)
-            
-            header = "СОВЕТ ШЕФА"
-            bbox = draw.textbbox((0, 0), header, font=self.fonts['section'])
-            header_w = bbox[2] - bbox[0]
-            draw.rectangle([((CARD_WIDTH - header_w)//2 - 20, tip_y_start - 25), ((CARD_WIDTH + header_w)//2 + 20, tip_y_start + 25)], fill=BG_COLOR)
-            draw.text(((CARD_WIDTH - header_w)//2, tip_y_start - 25), header, font=self.fonts['section'], fill=ACCENT_COLOR)
-            
-            ty = tip_y_start + 70
-            for t_line in tip_text:
-                bbox = draw.textbbox((0, 0), t_line, font=self.fonts['italic'])
-                draw.text(((CARD_WIDTH - (bbox[2]-bbox[0]))//2, ty), t_line, font=self.fonts['italic'], fill=TEXT_COLOR)
-                ty += 50
-
-        # --- 5. ФУТЕР ---
-        footer = "Сгенерировано ботом @chto_poest_bot"
-        bbox = draw.textbbox((0, 0), footer, font=self.fonts['meta'])
-        draw.text(((CARD_WIDTH - (bbox[2]-bbox[0]))//2, CARD_HEIGHT - 60), footer, font=self.fonts['meta'], fill="#AAAAAA")
+            # Печать текста (курсив)
+            ty = text_start_y
+            for line in tip_lines:
+                lw = draw.textlength(line, font=self.fonts['italic'])
+                draw.text(((CARD_WIDTH - lw)/2, ty), line, font=self.fonts['italic'], fill=TEXT_COLOR)
+                ty += 55
 
         buffer = BytesIO()
-        img.save(buffer, format='PNG', quality=95)
+        img.save(buffer, format='PNG')
         return buffer.getvalue()
-
-    def _draw_placeholder(self, draw, x, y, w, h):
-        draw.rectangle([x, y, x + w, y + h], fill="#E0E0E0", outline=ACCENT_COLOR)
-        draw.text((x + w//2 - 60, y + h//2), "Нет фото", font=self.fonts['section'], fill=ACCENT_COLOR)
 
 recipe_card_generator = RecipeCardGenerator()

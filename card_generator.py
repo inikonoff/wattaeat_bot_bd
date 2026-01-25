@@ -59,20 +59,90 @@ class RecipeCardGenerator:
                         logger.error(f"Error downloading {filename}: {e}")
         self._load_fonts()
 
-    def _load_fonts(self):
+    # Замените метод _load_fonts в card_generator.py:
+
+def _load_fonts(self):
+    """Загрузка шрифтов с fallback на дефолтные"""
+    try:
+        # Проверяем существование файлов
+        title_path = self._get_font_path("Title.ttf")
+        body_path = self._get_font_path("Body.ttf")
+        body_bold_path = self._get_font_path("BodyBold.ttf")
+        italic_path = self._get_font_path("Italic.ttf")
+        
+        # Проверяем, что все файлы существуют и не пусты
+        all_exist = all([
+            os.path.exists(title_path) and os.path.getsize(title_path) > 1000,
+            os.path.exists(body_path) and os.path.getsize(body_path) > 1000,
+            os.path.exists(body_bold_path) and os.path.getsize(body_bold_path) > 1000,
+            os.path.exists(italic_path) and os.path.getsize(italic_path) > 1000
+        ])
+        
+        if not all_exist:
+            logger.warning("⚠️ Шрифты не найдены или повреждены, используем fallback")
+            self._use_fallback_fonts()
+            return
+        
+        # Пробуем загрузить
+        self.fonts['header'] = ImageFont.truetype(title_path, 90)
+        self.fonts['subheader'] = ImageFont.truetype(title_path, 50)
+        self.fonts['body'] = ImageFont.truetype(body_path, 40)
+        self.fonts['body_bold'] = ImageFont.truetype(body_bold_path, 40)
+        self.fonts['italic'] = ImageFont.truetype(italic_path, 45)
+        self.fonts['meta'] = ImageFont.truetype(body_path, 30)
+        
+        self.fonts_loaded = True
+        logger.info("✅ Шрифты загружены успешно")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки шрифтов: {e}")
+        self._use_fallback_fonts()
+
+def _use_fallback_fonts(self):
+    """Использует системные шрифты как fallback"""
+    logger.info("🔄 Попытка использовать системные шрифты...")
+    
+    # Список возможных системных шрифтов (по приоритету)
+    system_fonts = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
+        "C:\\Windows\\Fonts\\timesbd.ttf",  # Windows
+    ]
+    
+    found_font = None
+    for font_path in system_fonts:
+        if os.path.exists(font_path):
+            found_font = font_path
+            logger.info(f"✅ Найден системный шрифт: {font_path}")
+            break
+    
+    if found_font:
         try:
-            # Настройка размеров под макет
-            self.fonts['header'] = ImageFont.truetype(self._get_font_path("Title.ttf"), 90) # Огромный заголовок
-            self.fonts['subheader'] = ImageFont.truetype(self._get_font_path("Title.ttf"), 50) # "Ингредиенты"
-            self.fonts['body'] = ImageFont.truetype(self._get_font_path("Body.ttf"), 40)
-            self.fonts['body_bold'] = ImageFont.truetype(self._get_font_path("BodyBold.ttf"), 40)
-            self.fonts['italic'] = ImageFont.truetype(self._get_font_path("Italic.ttf"), 45) # Для совета
-            self.fonts['meta'] = ImageFont.truetype(self._get_font_path("Body.ttf"), 30) # Подписи к иконкам
+            self.fonts['header'] = ImageFont.truetype(found_font, 90)
+            self.fonts['subheader'] = ImageFont.truetype(found_font, 50)
+            self.fonts['body'] = ImageFont.truetype(found_font, 40)
+            self.fonts['body_bold'] = ImageFont.truetype(found_font, 40)
+            self.fonts['italic'] = ImageFont.truetype(found_font, 45)
+            self.fonts['meta'] = ImageFont.truetype(found_font, 30)
             self.fonts_loaded = True
+            logger.info("✅ Системные шрифты загружены")
+            return
         except Exception as e:
-            logger.error(f"Font load error: {e}")
-            self.fonts = {k: ImageFont.load_default() for k in ['header', 'subheader', 'body', 'body_bold', 'italic', 'meta']}
-            self.fonts_loaded = True
+            logger.error(f"❌ Не удалось загрузить системный шрифт: {e}")
+    
+    # Крайний fallback - PIL default
+    logger.warning("⚠️ Используем PIL default шрифты")
+    default = ImageFont.load_default()
+    self.fonts = {
+        'header': default,
+        'subheader': default,
+        'body': default,
+        'body_bold': default,
+        'italic': default,
+        'meta': default
+    }
+    self.fonts_loaded = True
 
     def _draw_vintage_divider(self, draw, center_x, y):
         """Рисует декоративный разделитель, если нет картинки"""

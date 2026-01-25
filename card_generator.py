@@ -5,194 +5,231 @@ import aiofiles
 import textwrap
 import logging
 from io import BytesIO
-from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 
-from config import (
-    CARD_WIDTH, CARD_HEIGHT, CARD_BG_COLOR, CARD_ACCENT_COLOR,
-    CARD_TEXT_COLOR, CARD_SECONDARY_COLOR,
-    FONT_BOLD, FONT_MEDIUM, FONT_REGULAR,
-    FONTS_DIR
-)
+# Импортируем путь к папке шрифтов из конфига, чтобы Docker не запутался
+from config import FONTS_DIR
+
+# Константы дизайна (можно вынести в config, но удобнее держать тут)
+CARD_WIDTH = 1200
+CARD_HEIGHT = 1600
+BG_COLOR = "#FDFBF7"       # Теплый кремовый
+TEXT_COLOR = "#2C2C2C"     # Глубокий серый
+ACCENT_COLOR = "#8B7355"   # Благородный бронзовый/оливковый
 
 logger = logging.getLogger(__name__)
 
 class RecipeCardGenerator:
-    """Генератор карточек с отложенной загрузкой шрифтов"""
-    
+    # Шрифты Lora (с засечками) для элегантности + Roboto для цифр
     FONTS_URLS = {
-        "Roboto-Bold.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf",
-        "Roboto-Medium.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Medium.ttf",
+        "Lora-Bold.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Bold.ttf",
+        "Lora-Regular.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Regular.ttf",
+        "Lora-Italic.ttf": "https://github.com/google/fonts/raw/main/ofl/lora/Lora-Italic.ttf",
         "Roboto-Regular.ttf": "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
     }
     
     def __init__(self):
         self.fonts_loaded = False
-        # Инициализируем None, а не объектами шрифтов
-        self.font_bold_large = None
-        self.font_bold_medium = None
-        self.font_medium = None
-        self.font_regular = None
-        self.font_small = None
+        self.fonts = {}
         
+    def _get_font_path(self, name):
+        # Используем переменную из config.py
+        return os.path.join(FONTS_DIR, name)
+
     async def ensure_fonts(self):
-        """Скачивает шрифты при старте"""
-        logger.info("📦 Проверка наличия шрифтов...")
+        """Скачивает шрифты при старте бота"""
         if not os.path.exists(FONTS_DIR):
             os.makedirs(FONTS_DIR)
 
+        logger.info("📦 Проверка шрифтов для карточек...")
         async with aiohttp.ClientSession() as session:
             for filename, url in self.FONTS_URLS.items():
-                file_path = os.path.join(FONTS_DIR, filename)
-                if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                path = self._get_font_path(filename)
+                # Если файла нет или он пустой
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
                     logger.info(f"📥 Скачиваю шрифт {filename}...")
                     try:
                         async with session.get(url) as resp:
                             if resp.status == 200:
-                                f = await aiofiles.open(file_path, mode='wb')
-                                await f.write(await resp.read())
-                                await f.close()
-                                logger.info(f"✅ Шрифт {filename} загружен")
+                                content = await resp.read()
+                                async with aiofiles.open(path, mode='wb') as f:
+                                    await f.write(content)
                             else:
-                                logger.error(f"❌ HTTP ошибка {resp.status} для {filename}")
+                                logger.error(f"❌ Ошибка скачивания {filename}: {resp.status}")
                     except Exception as e:
-                        logger.error(f"❌ Ошибка сети для {filename}: {e}")
+                        logger.error(f"❌ Ошибка сети для шрифта {filename}: {e}")
         
-        # После скачивания пробуем загрузить
         self._load_fonts()
 
     def _load_fonts(self):
-        """Загрузка шрифтов в память Pillow"""
-        if self.fonts_loaded: return
-
+        """Загрузка шрифтов в память"""
         try:
-            # Используем абсолютные пути
-            abs_font_bold = os.path.abspath(FONT_BOLD)
-            abs_font_medium = os.path.abspath(FONT_MEDIUM)
-            abs_font_regular = os.path.abspath(FONT_REGULAR)
-
-            self.font_bold_large = ImageFont.truetype(abs_font_bold, 70)
-            self.font_bold_medium = ImageFont.truetype(abs_font_bold, 50)
-            self.font_medium = ImageFont.truetype(abs_font_medium, 40)
-            self.font_regular = ImageFont.truetype(abs_font_regular, 36)
-            self.font_small = ImageFont.truetype(abs_font_regular, 30)
-            
+            self.fonts['title'] = ImageFont.truetype(self._get_font_path("Lora-Bold.ttf"), 85)
+            self.fonts['section'] = ImageFont.truetype(self._get_font_path("Lora-Bold.ttf"), 45)
+            self.fonts['main'] = ImageFont.truetype(self._get_font_path("Lora-Regular.ttf"), 38)
+            self.fonts['italic'] = ImageFont.truetype(self._get_font_path("Lora-Italic.ttf"), 38)
+            self.fonts['meta'] = ImageFont.truetype(self._get_font_path("Roboto-Regular.ttf"), 30)
             self.fonts_loaded = True
-            logger.info("✅ Шрифты успешно подключены к Pillow")
+            logger.info("✅ Шрифты успешно загружены")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка загрузки TTF шрифтов: {e}. Использую дефолтные.")
-            # Fallback на дефолтный шрифт
+            logger.error(f"❌ Ошибка загрузки шрифтов (использую дефолтные): {e}")
             default = ImageFont.load_default()
-            self.font_bold_large = default
-            self.font_bold_medium = default
-            self.font_medium = default
-            self.font_regular = default
-            self.font_small = default
-            self.fonts_loaded = True # Считаем загруженными, хоть и дефолтными
-
-    def _draw_centered_text(self, draw, text, font, y, color):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        width = bbox[2] - bbox[0]
-        x = (CARD_WIDTH - width) // 2
-        draw.text((x, y), text, font=font, fill=color)
-        return y + (bbox[3] - bbox[1]) + 20
+            self.fonts = {k: default for k in ['title', 'section', 'main', 'italic', 'meta']}
+            self.fonts_loaded = True
 
     def generate_card(self, title, ingredients, time, portions, difficulty, chef_tip, dish_image_data=None):
-        if not self.fonts_loaded:
+        # Страховка: если шрифты еще не загружены
+        if not self.fonts_loaded: 
             self._load_fonts()
 
-        image = Image.new('RGB', (CARD_WIDTH, CARD_HEIGHT), CARD_BG_COLOR)
-        draw = ImageDraw.Draw(image)
-        
-        current_y = 0
-        
-        # 1. HEADER
-        draw.rectangle([(0, 0), (CARD_WIDTH, 120)], fill=CARD_ACCENT_COLOR)
-        self._draw_centered_text(draw, "🍽️ ЧЁПОЕСТЬ", self.font_bold_medium, 35, "#FFFFFF")
-        current_y = 120
+        img = Image.new('RGB', (CARD_WIDTH, CARD_HEIGHT), BG_COLOR)
+        draw = ImageDraw.Draw(img)
+        margin = 80
 
-        # 2. IMAGE
-        img_height = 800
+        # --- 1. ЗАГОЛОВОК ---
+        title_text = title.upper()
+        # Авто-подбор размера шрифта если заголовок очень длинный
+        if len(title_text) > 40:
+            font_title = self.fonts['section'] # Поменьше
+        else:
+            font_title = self.fonts['title']
+
+        wrapped_title = textwrap.wrap(title_text, width=25)
+        current_y = 100
+        
+        for line in wrapped_title:
+            bbox = draw.textbbox((0, 0), line, font=font_title)
+            text_w = bbox[2] - bbox[0]
+            draw.text(((CARD_WIDTH - text_w)//2, current_y), line, font=font_title, fill=TEXT_COLOR)
+            current_y += 100
+
+        # Разделительная линия
+        draw.line([(margin, current_y + 20), (CARD_WIDTH - margin, current_y + 20)], fill=ACCENT_COLOR, width=2)
+        current_y += 80
+
+        # --- 2. ФОТО И ИНГРЕДИЕНТЫ (2 КОЛОНКИ) ---
+        photo_width = 500
+        photo_height = 600
+        
+        # Левая колонка - Фото
         if dish_image_data:
             try:
-                dish_img = Image.open(BytesIO(dish_image_data)).convert("RGBA")
-                ratio = max(CARD_WIDTH / dish_img.width, img_height / dish_img.height)
-                new_size = (int(dish_img.width * ratio), int(dish_img.height * ratio))
-                dish_img = dish_img.resize(new_size, Image.Resampling.LANCZOS)
+                dish_img = Image.open(BytesIO(dish_image_data)).convert("RGB")
                 
-                left = (dish_img.width - CARD_WIDTH) // 2
-                top = (dish_img.height - img_height) // 2
-                dish_img = dish_img.crop((left, top, left + CARD_WIDTH, top + img_height))
+                # Smart Crop (Центрирование и кроп)
+                aspect = dish_img.width / dish_img.height
+                target_aspect = photo_width / photo_height
                 
-                image.paste(dish_img, (0, current_y))
+                if aspect > target_aspect:
+                    # Картинка шире целевой
+                    new_w = int(dish_img.height * target_aspect)
+                    offset = (dish_img.width - new_w) // 2
+                    dish_img = dish_img.crop((offset, 0, offset + new_w, dish_img.height))
+                else:
+                    # Картинка выше целевой
+                    new_h = int(dish_img.width / target_aspect)
+                    offset = (dish_img.height - new_h) // 2
+                    dish_img = dish_img.crop((0, offset, dish_img.width, offset + new_h))
+                
+                dish_img = dish_img.resize((photo_width, photo_height), Image.Resampling.LANCZOS)
+                
+                img.paste(dish_img, (margin, current_y))
+                # Рамка фото
+                draw.rectangle([margin, current_y, margin + photo_width, current_y + photo_height], outline=ACCENT_COLOR, width=3)
             except Exception as e:
-                logger.error(f"Image error: {e}")
-                draw.rectangle([(0, current_y), (CARD_WIDTH, current_y + img_height)], fill="#EEEEEE")
-                self._draw_centered_text(draw, "Нет изображения", self.font_medium, current_y + 350, CARD_SECONDARY_COLOR)
+                logger.error(f"Image paste error: {e}")
+                # Плейсхолдер
+                draw.rectangle([margin, current_y, margin + photo_width, current_y + photo_height], fill="#E0E0E0", outline=ACCENT_COLOR)
+                draw.text((margin + 130, current_y + 280), "Нет фото", font=self.fonts['section'], fill=ACCENT_COLOR)
         else:
-            draw.rectangle([(0, current_y), (CARD_WIDTH, current_y + img_height)], fill="#EEEEEE")
-            self._draw_centered_text(draw, "Нет изображения", self.font_medium, current_y + 350, CARD_SECONDARY_COLOR)
-        
-        current_y += img_height + 40
+            # Плейсхолдер если нет фото
+            draw.rectangle([margin, current_y, margin + photo_width, current_y + photo_height], fill="#E0E0E0", outline=ACCENT_COLOR)
+            draw.text((margin + 130, current_y + 280), "Нет фото", font=self.fonts['section'], fill=ACCENT_COLOR)
 
-        # 3. TITLE
-        lines = textwrap.wrap(title, width=25)
-        for line in lines:
-            current_y = self._draw_centered_text(draw, line, self.font_bold_large, current_y, CARD_TEXT_COLOR)
+        # Правая колонка - Ингредиенты
+        ing_x = margin + photo_width + 60
+        draw.text((ing_x, current_y), "ИНГРЕДИЕНТЫ:", font=self.fonts['section'], fill=ACCENT_COLOR)
         
-        current_y += 20
-        draw.line([(300, current_y), (CARD_WIDTH - 300, current_y)], fill=CARD_ACCENT_COLOR, width=5)
-        current_y += 50
+        ing_y = current_y + 70
+        # Берем первые 10-12 ингредиентов, чтобы влезло
+        for ing in ingredients[:11]:
+            line = f"• {ing}"
+            wrapped_ing = textwrap.wrap(line, width=28)
+            for w_line in wrapped_ing:
+                draw.text((ing_x, ing_y), w_line, font=self.fonts['main'], fill=TEXT_COLOR)
+                ing_y += 45
+            ing_y += 10 # Отступ между пунктами
 
-        # 4. META
-        meta_text = f"⏱ {time} мин   |   👥 {portions} порц.   |   📊 {difficulty}"
-        current_y = self._draw_centered_text(draw, meta_text, self.font_medium, current_y, CARD_SECONDARY_COLOR)
-        current_y += 50
+        # Сдвигаем курсор ниже самого высокого элемента
+        current_y += max(photo_height, (ing_y - current_y)) + 50
 
-        # 5. INGREDIENTS
-        draw.text((80, current_y), "📦 Ингредиенты:", font=self.font_bold_medium, fill=CARD_ACCENT_COLOR)
-        current_y += 70
+        # --- 3. МЕТА ДАННЫЕ ---
+        meta_y = current_y
         
-        col_1_x = 100
-        col_2_x = CARD_WIDTH // 2 + 50
+        # Иконки (текстовые, так как эмодзи в PIL ч/б и зависят от шрифта)
+        # Лучше использовать текстовые метки для надежности стиля
+        meta_items = [
+            f"ВРЕМЯ: {time} мин", 
+            f"ПОРЦИИ: {portions}", 
+            f"УРОВЕНЬ: {difficulty}"
+        ]
         
-        items = ingredients[:10]
-        half = (len(items) + 1) // 2
-        col1 = items[:half]
-        col2 = items[half:]
+        # Распределяем по ширине (3 колонки)
+        col_width = (CARD_WIDTH - 2 * margin) // 3
         
-        start_ingredients_y = current_y
-        
-        for ing in col1:
-            draw.text((col_1_x, current_y), f"• {ing}", font=self.font_regular, fill=CARD_TEXT_COLOR)
-            current_y += 50
-            
-        current_y = start_ingredients_y
-        for ing in col2:
-            draw.text((col_2_x, current_y), f"• {ing}", font=self.font_regular, fill=CARD_TEXT_COLOR)
-            current_y += 50
-            
-        current_y = max(current_y, start_ingredients_y + (len(col1) * 50)) + 40
+        for i, item in enumerate(meta_items):
+            x_pos = margin + (i * col_width)
+            # Центрируем текст внутри своей колонки
+            bbox = draw.textbbox((0, 0), item, font=self.fonts['meta'])
+            text_w = bbox[2] - bbox[0]
+            # Небольшая коррекция для центрирования
+            draw.text((x_pos + (col_width - text_w)//2, meta_y), item, font=self.fonts['meta'], fill=ACCENT_COLOR)
 
-        # 6. TIP
+        current_y += 80
+
+        # --- 4. СОВЕТ ШЕФА ---
         if chef_tip:
-            tip_lines = textwrap.wrap(chef_tip, width=50)
-            box_height = len(tip_lines) * 45 + 100
+            tip_margin = margin
+            tip_y_start = current_y + 30
             
-            draw.rounded_rectangle([(50, current_y), (CARD_WIDTH - 50, current_y + box_height)], radius=30, fill="#FFF3CD")
-            draw.text((100, current_y + 30), "💡 Совет шефа:", font=self.font_bold_medium, fill="#856404")
+            # Рассчитываем высоту блока
+            tip_text = textwrap.wrap(f"«{chef_tip}»", width=55)
+            box_h = len(tip_text) * 50 + 130
             
-            text_y = current_y + 90
-            for line in tip_lines:
-                draw.text((100, text_y), line, font=self.font_regular, fill="#856404")
-                text_y += 45
+            # Проверяем, не вылезаем ли за пределы (footer занимает ~60px снизу)
+            if tip_y_start + box_h > CARD_HEIGHT - 80:
+                # Если не влезает, сокращаем текст
+                tip_text = tip_text[:3] 
+                tip_text.append("...")
+                box_h = len(tip_text) * 50 + 130
 
-        # FOOTER
-        footer_y = CARD_HEIGHT - 80
-        self._draw_centered_text(draw, "Сгенерировано ботом @chto_poest_bot", self.font_small, footer_y, CARD_SECONDARY_COLOR)
+            # Двойная рамка
+            draw.rectangle([tip_margin, tip_y_start, CARD_WIDTH - tip_margin, tip_y_start + box_h], outline=ACCENT_COLOR, width=1)
+            draw.rectangle([tip_margin+8, tip_y_start+8, CARD_WIDTH - tip_margin - 8, tip_y_start + box_h - 8], outline=ACCENT_COLOR, width=3)
+            
+            # Заголовок блока
+            header = "СОВЕТ ШЕФА"
+            bbox = draw.textbbox((0, 0), header, font=self.fonts['section'])
+            header_w = bbox[2] - bbox[0]
+            # Рисуем подложку под заголовок, чтобы перекрыть рамку
+            draw.rectangle([((CARD_WIDTH - header_w)//2 - 20, tip_y_start - 25), ((CARD_WIDTH + header_w)//2 + 20, tip_y_start + 25)], fill=BG_COLOR)
+            draw.text(((CARD_WIDTH - header_w)//2, tip_y_start - 25), header, font=self.fonts['section'], fill=ACCENT_COLOR)
+            
+            ty = tip_y_start + 60
+            for t_line in tip_text:
+                bbox = draw.textbbox((0, 0), t_line, font=self.fonts['italic'])
+                draw.text(((CARD_WIDTH - (bbox[2]-bbox[0]))//2, ty), t_line, font=self.fonts['italic'], fill=TEXT_COLOR)
+                ty += 50
+
+        # --- 5. ФУТЕР ---
+        footer_text = "Сгенерировано ботом @chto_poest_bot"
+        bbox = draw.textbbox((0, 0), footer_text, font=self.fonts['meta'])
+        footer_w = bbox[2] - bbox[0]
+        draw.text(((CARD_WIDTH - footer_w)//2, CARD_HEIGHT - 60), footer_text, font=self.fonts['meta'], fill="#AAAAAA")
 
         buffer = BytesIO()
-        image.save(buffer, format='PNG')
+        img.save(buffer, format='PNG', quality=95)
         return buffer.getvalue()
 
+# Создаем экземпляр, чтобы его можно было импортировать
 recipe_card_generator = RecipeCardGenerator()

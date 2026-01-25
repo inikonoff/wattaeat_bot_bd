@@ -1,11 +1,29 @@
-import asyncpg
-from typing import List, Dict, Any, Optional
-import json
-import logging
-import re
-from datetime import datetime, timedelta
-from config import DATABASE_URL, DAILY_IMAGE_LIMIT_NORMAL, DAILY_IMAGE_LIMIT_ADMIN, ADMIN_IDS
+# Замените импорты в НАЧАЛЕ файла handlers.py на эти:
 
+import os
+import io
+import logging
+import hashlib
+import time
+import asyncio
+import aiohttp
+from aiogram import Dispatcher, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, 
+    CallbackQuery, BufferedInputFile, FSInputFile
+)
+
+from groq_service import groq_service
+from state_manager import state_manager
+from database import db as database
+from admin_service import admin_service
+from storage_service import storage_service
+from pollinations_service import pollinations_service
+from card_generator import recipe_card_generator
+from config import ADMIN_IDS
+
+# Инициализация
 logger = logging.getLogger(__name__)
 
 class Database:

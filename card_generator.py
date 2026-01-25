@@ -65,13 +65,11 @@ class RecipeCardGenerator:
     def _load_fonts(self):
         """Загрузка шрифтов с fallback на дефолтные"""
         try:
-            # Проверяем существование файлов
             title_path = self._get_font_path("Title.ttf")
             body_path = self._get_font_path("Body.ttf")
             body_bold_path = self._get_font_path("BodyBold.ttf")
             italic_path = self._get_font_path("Italic.ttf")
             
-            # Проверяем, что все файлы существуют и не пусты
             all_exist = all([
                 os.path.exists(title_path) and os.path.getsize(title_path) > 1000,
                 os.path.exists(body_path) and os.path.getsize(body_path) > 1000,
@@ -80,11 +78,10 @@ class RecipeCardGenerator:
             ])
             
             if not all_exist:
-                logger.warning("⚠️ Шрифты не найдены или повреждены, используем fallback")
+                logger.warning("⚠️ Шрифты не найдены, используем fallback")
                 self._use_fallback_fonts()
                 return
             
-            # Пробуем загрузить
             self.fonts['header'] = ImageFont.truetype(title_path, 90)
             self.fonts['subheader'] = ImageFont.truetype(title_path, 50)
             self.fonts['body'] = ImageFont.truetype(body_path, 40)
@@ -103,7 +100,6 @@ class RecipeCardGenerator:
         """Использует системные шрифты как fallback"""
         logger.info("🔄 Попытка использовать системные шрифты...")
         
-        # Список возможных системных шрифтов
         system_fonts = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
@@ -132,7 +128,6 @@ class RecipeCardGenerator:
             except Exception as e:
                 logger.error(f"❌ Не удалось загрузить системный шрифт: {e}")
         
-        # Крайний fallback - PIL default
         logger.warning("⚠️ Используем PIL default шрифты")
         default = ImageFont.load_default()
         self.fonts = {
@@ -230,51 +225,40 @@ class RecipeCardGenerator:
                 ing_y += 45
             ing_y += 15
 
-        # --- ИНФО-ПАНЕЛЬ ---
+        # --- ИНФО-ПАНЕЛЬ С ЭМОДЗИ ---
         meta_y = current_y + photo_size + 40
         
-        icons_info = [
-            ("clock.png", f"ВРЕМЯ: {time}"),
-            ("chef.png", f"ПОРЦИИ: {portions}")
+        # ИСПРАВЛЕНИЕ 1: Используем эмодзи вместо иконок/кружков
+        meta_items = [
+            ("⏱️", f"ВРЕМЯ: {time}"),
+            ("👥", f"ПОРЦИИ: {portions}")
         ]
         
         icon_x_start = col_left_x
-        for icon_file, text in icons_info:
-            icon_path = os.path.join(ASSETS_DIR, icon_file)
+        for emoji, text in meta_items:
+            # Рисуем эмодзи
+            emoji_font = self.fonts['subheader']
+            draw.text((icon_x_start, meta_y), emoji, font=emoji_font, fill=ACCENT_COLOR)
             
-            if os.path.exists(icon_path):
-                try:
-                    icn = Image.open(icon_path).convert("RGBA").resize((50, 50))
-                    mask = icn.split()[3]
-                    img.paste(icn, (icon_x_start, meta_y), mask)
-                except:
-                    draw.ellipse([icon_x_start, meta_y, icon_x_start+50, meta_y+50], outline=TEXT_COLOR, width=2)
-            else:
-                draw.ellipse([icon_x_start, meta_y, icon_x_start+50, meta_y+50], outline=TEXT_COLOR, width=2)
-                
+            # Рисуем текст
             draw.text((icon_x_start + 65, meta_y + 5), text, font=self.fonts['meta'], fill=TEXT_COLOR)
             icon_x_start += 300
 
-        # --- СОВЕТ ШЕФА ---
+        # --- СОВЕТ ШЕФА БЕЗ РАМКИ ---
         if chef_tip:
             tip_box_y = max(ing_y, meta_y + 100) + 40
-            tip_margin = 100
             
             clean_tip = chef_tip.replace("<b>", "").replace("</b>", "").replace("СОВЕТ ШЕФ-ПОВАРА:", "").strip()
             
+            # Заголовок
             header = "СОВЕТ ШЕФА:"
             header_width = draw.textlength(header, font=self.fonts['subheader'])
             draw.text(((CARD_WIDTH - header_width)/2, tip_box_y), 
                       header, font=self.fonts['subheader'], fill=ACCENT_COLOR)
             
+            # ИСПРАВЛЕНИЕ 2: Убрали рамку, оставили только текст
             tip_lines = textwrap.wrap(clean_tip, width=50)
             text_start_y = tip_box_y + 70
-            
-            box_height = len(tip_lines) * 55 + 100
-            
-            rect_coords = [tip_margin, tip_box_y - 20, CARD_WIDTH - tip_margin, tip_box_y + box_height]
-            draw.rectangle(rect_coords, outline=ACCENT_COLOR, width=3)
-            draw.rectangle([r + 10 if i < 2 else r - 10 for i, r in enumerate(rect_coords)], outline=ACCENT_COLOR, width=1)
 
             ty = text_start_y
             for line in tip_lines:

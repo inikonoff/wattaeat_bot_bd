@@ -87,10 +87,12 @@ class RecipeCardGenerator:
         draw.ellipse([start_x-5, y-5, start_x+5, y+5], fill=ACCENT_COLOR)
         draw.ellipse([center_x + width//2 - 5, y-5, center_x + width//2 + 5, y+5], fill=ACCENT_COLOR)
 
+    # Замените метод generate_card в классе RecipeCardGenerator:
+
     def generate_card(self, title, ingredients, time, portions, difficulty, chef_tip, dish_image_data=None):
         if not self.fonts_loaded: self._load_fonts()
 
-        # 1. Фон (Попытка загрузить текстуру бумаги, иначе заливка)
+        # 1. Фон
         bg_path = os.path.join(ASSETS_DIR, "paper_texture.jpg")
         if os.path.exists(bg_path):
             img = Image.open(bg_path).resize((CARD_WIDTH, CARD_HEIGHT)).convert("RGB")
@@ -100,16 +102,19 @@ class RecipeCardGenerator:
         draw = ImageDraw.Draw(img)
         
         # --- ЗАГОЛОВОК ---
-        # Центрирование заголовка (UpperCase)
-        title_text = title.replace("<b>", "").replace("</b>", "").upper()
+        # Убираем HTML теги и приводим к Title Case
+        clean_title = title.replace("<b>", "").replace("</b>", "").strip()
+        # Приводим к нормальному виду: первая буква заглавная, остальные строчные
+        clean_title = clean_title[0].upper() + clean_title[1:].lower() if clean_title else ""
+        
         font_h = self.fonts['header']
         
         # Если заголовок длинный, уменьшаем шрифт
-        if len(title_text) > 20:
+        if len(clean_title) > 20:
             font_h = ImageFont.truetype(self._get_font_path("Title.ttf"), 70)
 
         # Разбивка на строки
-        wrapped_title = textwrap.wrap(title_text, width=25)
+        wrapped_title = textwrap.wrap(clean_title, width=25)
         current_y = 120
         
         for line in wrapped_title:
@@ -123,7 +128,6 @@ class RecipeCardGenerator:
         current_y += 80
 
         # --- ОСНОВНОЙ БЛОК (ФОТО + ИНГРЕДИЕНТЫ) ---
-        # Координаты как в макете
         col_left_x = 100
         col_right_x = 680
         photo_size = 520
@@ -141,37 +145,33 @@ class RecipeCardGenerator:
                 
                 img.paste(dish, (col_left_x, current_y))
                 
-                # Двойная рамка вокруг фото (как на фото)
+                # Двойная рамка вокруг фото
                 draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], outline=TEXT_COLOR, width=2)
                 draw.rectangle([col_left_x-5, current_y-5, col_left_x+photo_size+5, current_y+photo_size+5], outline=ACCENT_COLOR, width=1)
                 
             except Exception as e:
-                logger.error(e)
+                logger.error(f"Image error: {e}")
                 draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], fill="#D7CCC8", outline=TEXT_COLOR)
                 draw.text((col_left_x+180, current_y+240), "НЕТ ФОТО", font=self.fonts['subheader'], fill=ACCENT_COLOR)
         else:
-             draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], fill="#D7CCC8", outline=TEXT_COLOR)
+            draw.rectangle([col_left_x, current_y, col_left_x+photo_size, current_y+photo_size], fill="#D7CCC8", outline=TEXT_COLOR)
 
         # 2. Ингредиенты (Справа)
         draw.text((col_right_x, current_y), "ИНГРЕДИЕНТЫ:", font=self.fonts['subheader'], fill=TEXT_COLOR)
         
         ing_y = current_y + 80
-        clean_ings = [i.replace("<b>", "").replace("</b>", "").strip("• ") for i in ingredients[:10]]
+        clean_ings = [i.replace("<b>", "").replace("</b>", "").replace("🔸", "").strip("• ").strip() for i in ingredients[:10]]
         
         for ing in clean_ings:
-            # Разделяем название и количество, если возможно, для красоты (опционально)
-            # Просто печатаем список с буллитами
-            wrapped_ing = textwrap.wrap(f"- {ing}", width=22)
+            wrapped_ing = textwrap.wrap(f"• {ing}", width=22)
             for w_line in wrapped_ing:
                 draw.text((col_right_x, ing_y), w_line, font=self.fonts['body'], fill=TEXT_COLOR)
                 ing_y += 45
             ing_y += 15
 
         # --- ИНФО-ПАНЕЛЬ (ВРЕМЯ, ПОРЦИИ) ---
-        # Расположена под фото в макете
         meta_y = current_y + photo_size + 40
         
-        # Пытаемся загрузить иконки, если нет - рисуем текст
         icons_info = [
             ("clock.png", f"ВРЕМЯ: {time}"),
             ("chef.png", f"ПОРЦИИ: {portions}")
@@ -181,50 +181,40 @@ class RecipeCardGenerator:
         for icon_file, text in icons_info:
             icon_path = os.path.join(ASSETS_DIR, icon_file)
             
-            # Рисуем иконку (или заглушку)
             if os.path.exists(icon_path):
                 try:
                     icn = Image.open(icon_path).convert("RGBA").resize((50, 50))
-                    # Накладываем иконку
                     mask = icn.split()[3]
                     img.paste(icn, (icon_x_start, meta_y), mask)
-                except: pass
+                except:
+                    draw.ellipse([icon_x_start, meta_y, icon_x_start+50, meta_y+50], outline=TEXT_COLOR, width=2)
             else:
-                # Рисуем кружок если иконки нет
                 draw.ellipse([icon_x_start, meta_y, icon_x_start+50, meta_y+50], outline=TEXT_COLOR, width=2)
                 
-            # Текст рядом с иконкой
             draw.text((icon_x_start + 65, meta_y + 5), text, font=self.fonts['meta'], fill=TEXT_COLOR)
-            
-            # Сдвиг вправо для следующей
-            icon_x_start += 300 # Ширина слота
+            icon_x_start += 300
 
-        # --- СОВЕТ ШЕФА (БОКС ВНИЗУ) ---
+        # --- СОВЕТ ШЕФА ---
         if chef_tip:
             tip_box_y = max(ing_y, meta_y + 100) + 40
             tip_margin = 100
             
             clean_tip = chef_tip.replace("<b>", "").replace("</b>", "").replace("СОВЕТ ШЕФ-ПОВАРА:", "").strip()
             
-            # Заголовок бокса
             header = "СОВЕТ ШЕФА:"
-            draw.text(((CARD_WIDTH - draw.textlength(header, font=self.fonts['subheader']))/2, tip_box_y), 
+            header_width = draw.textlength(header, font=self.fonts['subheader'])
+            draw.text(((CARD_WIDTH - header_width)/2, tip_box_y), 
                       header, font=self.fonts['subheader'], fill=ACCENT_COLOR)
             
-            # Текст совета
             tip_lines = textwrap.wrap(clean_tip, width=50)
             text_start_y = tip_box_y + 70
             
-            # Рамка вокруг совета (Двойная линия как в меню)
             box_height = len(tip_lines) * 55 + 100
             
-            # Рисуем рамку
             rect_coords = [tip_margin, tip_box_y - 20, CARD_WIDTH - tip_margin, tip_box_y + box_height]
             draw.rectangle(rect_coords, outline=ACCENT_COLOR, width=3)
-            # Внутренняя тонкая рамка
             draw.rectangle([r + 10 if i < 2 else r - 10 for i, r in enumerate(rect_coords)], outline=ACCENT_COLOR, width=1)
 
-            # Печать текста (курсив)
             ty = text_start_y
             for line in tip_lines:
                 lw = draw.textlength(line, font=self.fonts['italic'])
@@ -232,7 +222,7 @@ class RecipeCardGenerator:
                 ty += 55
 
         buffer = BytesIO()
-        img.save(buffer, format='PNG')
+        img.save(buffer, format='PNG', quality=95)
         return buffer.getvalue()
 
 recipe_card_generator = RecipeCardGenerator()

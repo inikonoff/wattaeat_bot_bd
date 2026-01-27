@@ -45,10 +45,8 @@ class AdminService:
             if activity_data:
                 text += "📈 <b>Активность по дням недели:</b>\n"
                 
-                # Находим максимальное значение для масштабирования
                 max_activity = max(item['count'] for item in activity_data) if activity_data else 1
                 
-                # Дни недели на русском
                 day_map = {
                     'Monday': 'Пн',
                     'Tuesday': 'Вт', 
@@ -99,7 +97,7 @@ class AdminService:
             return text
             
         except Exception as e:
-            logger.error(f"Ошибка получения статистики: {e}")
+            logger.error(f"Ошибка получения статистики: {e}", exc_info=True)
             return "❌ Ошибка получения статистики"
     
     @staticmethod
@@ -116,7 +114,6 @@ class AdminService:
             for idx, user in enumerate(top_users):
                 medal = AdminService.MEDALS[idx] if idx < len(AdminService.MEDALS) else "🔸"
                 
-                # Формируем имя пользователя
                 name_parts = []
                 if user.get('first_name'):
                     name_parts.append(user['first_name'])
@@ -125,7 +122,6 @@ class AdminService:
                 
                 display_name = " ".join(name_parts) if name_parts else "Аноним"
                 
-                # Добавляем username если есть
                 if user.get('username'):
                     display_name += f" (@{user['username']})"
                 
@@ -135,7 +131,7 @@ class AdminService:
             return text
             
         except Exception as e:
-            logger.error(f"Ошибка получения топ поваров: {e}")
+            logger.error(f"Ошибка получения топ поваров: {e}", exc_info=True)
             return "❌ Ошибка получения данных"
     
     @staticmethod
@@ -155,7 +151,6 @@ class AdminService:
             
             text = f"🥕 <b>Народные любимцы - Топ-10 продуктов {period_names.get(period, '')}</b>\n\n"
             
-            # Эмодзи для продуктов
             emoji_map = {
                 'картофель': '🥔', 'картошка': '🥔',
                 'лук': '🧅',
@@ -182,7 +177,6 @@ class AdminService:
                 name = ingredient['name']
                 count = ingredient['count']
                 
-                # Подбираем эмодзи
                 emoji = '🔸'
                 for key, em in emoji_map.items():
                     if key in name:
@@ -194,7 +188,7 @@ class AdminService:
             return text
             
         except Exception as e:
-            logger.error(f"Ошибка получения топ продуктов: {e}")
+            logger.error(f"Ошибка получения топ продуктов: {e}", exc_info=True)
             return "❌ Ошибка получения данных"
     
     @staticmethod
@@ -216,27 +210,23 @@ class AdminService:
             return text
             
         except Exception as e:
-            logger.error(f"Ошибка получения топ блюд: {e}")
+            logger.error(f"Ошибка получения топ блюд: {e}", exc_info=True)
             return "❌ Ошибка получения данных"
     
     @staticmethod
-    # ИСПРАВЛЕНИЕ 2: Замените метод get_random_fact_message в admin_service.py
-
-@staticmethod
-async def get_random_fact_message() -> str:
-    """Случайный факт с обработкой ошибок"""
-    try:
-        fact = await db.get_random_fact()
-        
-        # Проверяем, что факт не пустой
-        if not fact or len(fact) < 5:
-            return "🎲 <b>Случайный факт</b>\n\nПока недостаточно данных для генерации фактов"
-        
-        return f"🎲 <b>Случайный факт</b>\n\n{fact}"
-        
-    except Exception as e:
-        logger.error(f"Ошибка получения факта: {e}", exc_info=True)
-        return "❌ Ошибка получения данных. Попробуйте позже."
+    async def get_random_fact_message() -> str:
+        """Случайный факт с обработкой ошибок"""
+        try:
+            fact = await db.get_random_fact()
+            
+            if not fact or len(fact) < 5:
+                return "🎲 <b>Случайный факт</b>\n\nПока недостаточно данных для генерации фактов"
+            
+            return f"🎲 <b>Случайный факт</b>\n\n{fact}"
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения факта: {e}", exc_info=True)
+            return "❌ Ошибка получения данных. Попробуйте позже."
 
 # Глобальный экземпляр
 admin_service = AdminService()

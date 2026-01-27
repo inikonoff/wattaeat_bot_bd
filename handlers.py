@@ -19,7 +19,7 @@ from admin_service import admin_service
 from storage_service import storage_service
 from image_service import image_service
 from card_generator import recipe_card_generator
-from image_prompt_generator import image_prompt_generator  # Добавлено
+from image_prompt_generator import image_prompt_generator
 from config import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
     """Клавиатура под рецептом"""
     buttons = []
     
-    # НОВАЯ КНОПКА: Генерация промпта вместо изображения
+    # Кнопка генерации промпта
     buttons.append([InlineKeyboardButton(
         text="🎨 Промпт для Midjourney/DALL-E",
         callback_data="gen_prompt"
@@ -97,6 +97,35 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
     
     buttons.append([InlineKeyboardButton(text="🔄 Другой вариант", callback_data="repeat_recipe")])
     buttons.append([InlineKeyboardButton(text="⬅️ Вернуться к категориям", callback_data="back_to_categories")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_recipe_keyboard_favorite(recipe_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для избранного рецепта"""
+    buttons = []
+    
+    # Промпт для генерации
+    buttons.append([InlineKeyboardButton(
+        text="🎨 Промпт для Midjourney/DALL-E",
+        callback_data="gen_prompt"
+    )])
+    
+    # Карточка
+    buttons.append([InlineKeyboardButton(
+        text="📤 Поделиться рецептом",
+        callback_data="create_card"
+    )])
+    
+    # НОВАЯ КНОПКА: Удалить из избранного
+    buttons.append([InlineKeyboardButton(
+        text="🗑️ Удалить из избранного",
+        callback_data=f"fav_delete_{recipe_id}"
+    )])
+    
+    buttons.append([InlineKeyboardButton(
+        text="❌ Закрыть",
+        callback_data="delete_msg"
+    )])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -157,7 +186,8 @@ async def cmd_stats(message: Message):
         limit_text = f"{remaining}/{limit}" if limit != -1 else "∞"
         text = f"📊 <b>Статистика:</b>\n\n📝 Рецептов: <b>{len(user_recipes)}</b>\n🎨 Лимит фото: <b>{limit_text}</b>\n\n<b>История:</b>\n{recipes_text}"
         await message.answer(text, reply_markup=get_stats_keyboard(), parse_mode="HTML")
-    except: await message.answer("❌ Ошибка")
+    except: 
+        await message.answer("❌ Ошибка")
 
 async def cmd_favorites(message: Message):
     try:
@@ -166,7 +196,8 @@ async def cmd_favorites(message: Message):
             await message.answer("❤️ Пусто в избранном")
             return
         await message.answer(f"❤️ <b>Избранное ({len(favs)}):</b>", reply_markup=get_favorites_keyboard(favs), parse_mode="HTML")
-    except: await message.answer("❌ Ошибка")
+    except: 
+        await message.answer("❌ Ошибка")
 
 async def cmd_admin(message: Message):
     if message.from_user.id in ADMIN_IDS:
@@ -221,7 +252,8 @@ async def process_products_input(message: Message, user_id: int, products_text: 
         await state_manager.add_products(user_id, products_text)
         current = await state_manager.get_products(user_id)
         await message.answer(f"✅ Продукты: <b>{current}</b>\n\nЧто делаем?", reply_markup=get_confirmation_keyboard(), parse_mode="HTML")
-    except: await message.answer("❌ Ошибка")
+    except: 
+        await message.answer("❌ Ошибка")
 
 async def handle_voice(message: Message):
     user_id = message.from_user.id
@@ -254,7 +286,8 @@ async def handle_action_cook(callback: CallbackQuery):
     try:
         categories = await groq_service.analyze_categories(products)
         await wait.edit_text(f"✅ Продукты: <b>{products}</b>\n\n🍽️ <b>Категория:</b>", reply_markup=get_categories_keyboard(categories), parse_mode="HTML")
-    except: await wait.edit_text("❌ Ошибка анализа")
+    except: 
+        await wait.edit_text("❌ Ошибка анализа")
 
 async def handle_category_selection(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -406,14 +439,70 @@ async def handle_fav_add(callback: CallbackQuery):
     msg = "✅ Добавлено в избранное!" if success else "⚠️ Уже в избранном"
     await callback.answer(msg, show_alert=False)
 
+async def handle_fav_view(callback: CallbackQuery):
+    """Просмотр избранного рецепта (ОБНОВЛЕННАЯ ВЕРСИЯ)"""
+    try:
+        # Извлекаем recipe_id, игнорируя префикс fav_delete_
+        callback_data = callback.data
+        if callback_data.startswith("fav_delete_"):
+            return  # Этот случай обрабатывается в handle_fav_delete
+        
+        recipe_id = int(callback_data.replace("fav_", ""))
+        
+        recipe = await database.get_favorite_recipe(recipe_id)
+        
+        if not recipe:
+            await callback.answer("❌ Рецепт не найден", show_alert=True)
+            return
+        
+        # Сохраняем информацию о текущем блюде для генерации промпта
+        await state_manager.set_current_dish(callback.from_user.id, recipe['dish_name'])
+        
+        await callback.message.edit_text(
+            recipe['recipe_text'],
+            reply_markup=get_recipe_keyboard_favorite(recipe_id),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения избранного: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
+async def handle_fav_delete(callback: CallbackQuery):
+    """Удаление рецепта из избранного"""
+    try:
+        recipe_id = int(callback.data.replace("fav_delete_", ""))
+        user_id = callback.from_user.id
+        
+        # Удаляем из избранного (меняем флаг is_favorite на FALSE)
+        success = await database.remove_from_favorites(recipe_id)
+        
+        if success:
+            await callback.message.edit_text(
+                "✅ Рецепт удалён из избранного",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Закрыть", callback_data="delete_msg")]
+                ])
+            )
+            await callback.answer("✅ Удалено!")
+        else:
+            await callback.answer("❌ Не удалось удалить", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Ошибка удаления из избранного: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
+
 async def handle_restart(callback: CallbackQuery):
     await state_manager.clear_session(callback.from_user.id)
     await callback.message.edit_text("✅ Сброшено")
     await callback.answer()
 
 async def handle_delete_msg(c: CallbackQuery): 
-    try: await c.message.delete()
-    except: pass
+    try: 
+        await c.message.delete()
+    except: 
+        pass
 
 async def handle_action_add_more(c: CallbackQuery): 
     await c.message.edit_text("✏️ Пишите еще продукты:")
@@ -424,12 +513,6 @@ async def handle_back_to_categories(c: CallbackQuery):
 async def handle_repeat_recipe(c: CallbackQuery):
     # Логика повтора...
     await c.answer("Генерирую новый вариант...", show_alert=False)
-
-async def handle_fav_view(c: CallbackQuery):
-    rid = int(c.data.replace("fav_", ""))
-    r = await database.get_favorite_recipe(rid)
-    if r: 
-        await c.message.edit_text(r['recipe_text'], parse_mode="HTML")
 
 async def handle_clear_my_history(c: CallbackQuery):
     await database.clear_user_history(c.from_user.id)
@@ -499,15 +582,16 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_action_cook, F.data == "action_cook")
     dp.callback_query.register(handle_category_selection, F.data.startswith("cat_"))
     dp.callback_query.register(handle_dish_selection, F.data.startswith("dish_"))
-    dp.callback_query.register(handle_generate_prompt, F.data == "gen_prompt")  # Изменено с handle_generate_image
+    dp.callback_query.register(handle_generate_prompt, F.data == "gen_prompt")
     dp.callback_query.register(handle_create_card, F.data == "create_card")
     dp.callback_query.register(handle_fav_add, F.data.startswith("fav_add_"))
+    dp.callback_query.register(handle_fav_delete, F.data.startswith("fav_delete_"))
+    dp.callback_query.register(handle_fav_view, F.data.startswith("fav_") & ~F.data.startswith("fav_add_") & ~F.data.startswith("fav_delete_"))
     dp.callback_query.register(handle_restart, F.data == "restart")
     dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
     dp.callback_query.register(handle_action_add_more, F.data == "action_add_more")
     dp.callback_query.register(handle_back_to_categories, F.data == "back_to_categories")
     dp.callback_query.register(handle_repeat_recipe, F.data == "repeat_recipe")
-    dp.callback_query.register(handle_fav_view, F.data.startswith("fav_"))
     dp.callback_query.register(handle_clear_my_history, F.data == "clear_my_history")
     
     # Админка

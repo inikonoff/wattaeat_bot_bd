@@ -46,10 +46,6 @@ class Database:
         if self.pool:
             await self.pool.close()
 
-    # ... (Остальные методы getUser, check_image_limit и т.д. остаются без изменений) ...
-    # Я сократил код для читаемости, вставь сюда методы get_or_create_user, check_image_limit, create_or_update_session и т.д. из прошлого файла
-    # ВАЖНО: Ниже добавляем исправление для избранного
-
     async def get_or_create_user(self, telegram_id: int, username: str = None, first_name: str = None, last_name: str = None, language: str = 'ru') -> Dict:
         async with self.pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", telegram_id)
@@ -80,7 +76,7 @@ class Database:
         async with self.pool.acquire() as conn:
             await conn.execute("UPDATE users SET images_generated_today = images_generated_today + 1 WHERE id = $1", telegram_id)
 
-    # --- Session Methods (оставляем как были) ---
+    # --- Session Methods ---
     async def get_session(self, telegram_id: int) -> Optional[Dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM sessions WHERE user_id = $1", telegram_id)
@@ -147,7 +143,6 @@ class Database:
             r = await conn.fetchrow("SELECT * FROM recipes WHERE id = $1", recipe_id)
             return dict(r) if r else None
 
-    # === ИСПРАВЛЕНИЕ: Добавлен метод add_to_favorites ===
     async def add_to_favorites(self, user_id: int, recipe_id: int) -> bool:
         """Добавляет рецепт в избранное (Алиас для mark_as_favorite, но с проверкой юзера)"""
         async with self.pool.acquire() as conn:
@@ -155,6 +150,15 @@ class Database:
             # В данном случае просто обновляем по ID
             result = await conn.execute(
                 "UPDATE recipes SET is_favorite = TRUE WHERE id = $1",
+                recipe_id
+            )
+            return result == "UPDATE 1"
+
+    async def remove_from_favorites(self, recipe_id: int) -> bool:
+        """Удаляет рецепт из избранного (меняет флаг is_favorite на FALSE)"""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE recipes SET is_favorite = FALSE WHERE id = $1",
                 recipe_id
             )
             return result == "UPDATE 1"
@@ -177,7 +181,6 @@ class Database:
                 ON CONFLICT (recipe_hash) DO UPDATE SET image_url=$3, storage_backend=$4""",
                 dish_name, recipe_hash, image_url, backend, file_size
             )
-# Добавьте эти методы в класс Database (в конец файла database.py, перед db = Database())
 
     # --- СТАТИСТИКА ДЛЯ АДМИНКИ ---
     
@@ -236,7 +239,6 @@ class Database:
     async def get_category_stats(self) -> List[Dict]:
         """Статистика по категориям блюд"""
         async with self.pool.acquire() as conn:
-            # Извлекаем категории из названий рецептов по ключевым словам
             rows = await conn.fetch("""
                 SELECT 
                     CASE 
@@ -324,4 +326,6 @@ class Database:
                 f"🔥 Средний пользователь создает {avg} рецептов",
             ]
             return random.choice(facts)
+
+
 db = Database()

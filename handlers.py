@@ -19,6 +19,7 @@ from admin_service import admin_service
 from storage_service import storage_service
 from image_service import image_service
 from card_generator import recipe_card_generator
+from image_prompt_generator import image_prompt_generator  # Добавлено
 from config import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,13 @@ CATEGORY_MAP = {
     "mix": "🍱 Комплексный обед",
     "sauce": "🍾 Соусы"
 }
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+def get_hide_keyboard():
+    """Клавиатура для скрытия сообщения"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Скрыть", callback_data="delete_msg")]
+    ])
 
 # --- KEYBOARDS ---
 def get_confirmation_keyboard():
@@ -64,20 +72,32 @@ def get_dishes_keyboard(dishes_list: list):
     builder.append([InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="back_to_categories")])
     return InlineKeyboardMarkup(inline_keyboard=builder)
 
-def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False, remaining_images: int = 0):
+def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура под рецептом"""
     buttons = []
-    if remaining_images > 0 or remaining_images == -1:
-        limit_text = "∞" if remaining_images == -1 else remaining_images
-        buttons.append([InlineKeyboardButton(text=f"🎨 Сгенерировать фото ({limit_text})", callback_data="gen_image")])
-    else:
-        buttons.append([InlineKeyboardButton(text="🎨 Лимит исчерпан", callback_data="limit_exceeded")])
     
-    buttons.append([InlineKeyboardButton(text="📤 Поделиться рецептом", callback_data="create_card")])
+    # НОВАЯ КНОПКА: Генерация промпта вместо изображения
+    buttons.append([InlineKeyboardButton(
+        text="🎨 Промпт для Midjourney/DALL-E",
+        callback_data="gen_prompt"
+    )])
+    
+    # Кнопка создания карточки
+    buttons.append([InlineKeyboardButton(
+        text="📤 Поделиться рецептом",
+        callback_data="create_card"
+    )])
+    
+    # Кнопка "В избранное"
     if recipe_id:
-        buttons.append([InlineKeyboardButton(text="❤️ В избранное", callback_data=f"fav_add_{recipe_id}")])
+        buttons.append([InlineKeyboardButton(
+            text="❤️ В избранное",
+            callback_data=f"fav_add_{recipe_id}"
+        )])
     
     buttons.append([InlineKeyboardButton(text="🔄 Другой вариант", callback_data="repeat_recipe")])
     buttons.append([InlineKeyboardButton(text="⬅️ Вернуться к категориям", callback_data="back_to_categories")])
+    
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_stats_keyboard():
@@ -163,8 +183,6 @@ async def handle_text(message: Message):
     else:
         await process_products_input(message, user_id, text)
 
-# Замените функцию handle_direct_recipe в handlers.py:
-
 async def handle_direct_recipe(message: Message, text: str):
     """Прямой поиск рецепта по названию"""
     user_id = message.from_user.id
@@ -179,7 +197,7 @@ async def handle_direct_recipe(message: Message, text: str):
         await message.answer("Напишите название блюда, например: <i>Дай рецепт борща</i>", parse_mode="HTML")
         return
 
-    # ИСПРАВЛЕНИЕ: Приводим к нормальному виду (первая буква заглавная)
+    # Приводим к нормальному виду (первая буква заглавная)
     dish_name_display = dish_name[0].upper() + dish_name[1:].lower()
 
     wait = await message.answer(f"⚡️ Ищу рецепт: <b>{dish_name_display}</b>...", parse_mode="HTML")
@@ -191,9 +209,8 @@ async def handle_direct_recipe(message: Message, text: str):
         await state_manager.set_current_dish(user_id, dish_name_display)
         await state_manager.set_state(user_id, "recipe_sent")
         recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name_display, recipe)
-        can_generate, remaining, limit = await database.check_image_limit(user_id)
         
-        await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id, False, remaining), parse_mode="HTML")
+        await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
     except Exception as e:
         await wait.delete()
         logger.error(f"Recipe error: {e}")
@@ -261,59 +278,43 @@ async def handle_dish_selection(callback: CallbackQuery):
     
     await state_manager.set_current_dish(user_id, selected['name'])
     recipe_id = await state_manager.save_recipe_to_history(user_id, selected['name'], recipe)
-    can_gen, rem, lim = await database.check_image_limit(user_id)
     
-    await callback.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id, False, rem), parse_mode="HTML")
+    await callback.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
 
-# ... (импорты и начало файла без изменений) ...
-
-async def handle_generate_image(callback: CallbackQuery):
+async def handle_generate_prompt(callback: CallbackQuery):
+    """Генерирует промпт для создания изображения"""
     user_id = callback.from_user.id
-    
-    # 1. Получаем ID рецепта (ВАЖНО ДЛЯ СОХРАНЕНИЯ В БД)
-    # Метод get_last_saved_recipe_id берет ID из памяти state_manager
-    recipe_id = await state_manager.get_last_saved_recipe_id(user_id)
-    
     dish_name = await state_manager.get_current_dish(user_id)
     
-    can_gen, rem, lim = await database.check_image_limit(user_id)
-    if lim != -1 and rem <= 0:
-        await callback.answer("❌ Лимит исчерпан", show_alert=False)
+    if not dish_name:
+        await callback.answer("❌ Блюдо не найдено. Сначала выберите рецепт.", show_alert=True)
         return
-
-    wait = await callback.message.answer("🎨 Рисую (Hugging Face)...")
     
     try:
-        translated = await groq_service.translate_to_english(dish_name)
-        img_data = await image_service.generate_image(translated)
+        # Генерируем 3 варианта промптов
+        prompts = image_prompt_generator.generate_multiple_variants(dish_name, count=3)
         
-        if img_data:
-            # 1. Загружаем в облако
-            filename = f"{user_id}_{int(time.time())}.jpg"
-            image_url, backend = await storage_service.upload_image(img_data, filename)
-            
-            # 2. Сохраняем в кэш
-            recipe_hash = hashlib.md5(dish_name.encode()).hexdigest() # Тут лучше бы хеш рецепта, но пока так
-            await database.save_cached_image(dish_name, recipe_hash, image_url, backend, len(img_data))
-            
-            # 3. ОБНОВЛЯЕМ ЗАПИСЬ В ТАБЛИЦЕ РЕЦЕПТОВ (ЧТОБЫ БЫЛО В ИЗБРАННОМ)
-            if recipe_id and image_url:
-                await database.update_recipe_image(recipe_id, image_url)
-            
-            # 4. Увеличиваем счетчик
-            await database.increment_image_count(user_id)
-            
-            await wait.delete()
-            await callback.message.answer_photo(BufferedInputFile(img_data, "img.jpg"), caption=f"🎨 {dish_name}")
-        else:
-            await wait.edit_text("❌ Ошибка генерации")
+        # Формируем сообщение
+        message = f"🎨 <b>Промпты для генерации изображения:</b>\n\n"
+        message += f"📝 <b>Блюдо:</b> {dish_name}\n\n"
+        
+        for i, prompt in enumerate(prompts, 1):
+            message += f"<b>Вариант {i}:</b>\n"
+            message += f"<code>{prompt}</code>\n\n"
+        
+        message += "💡 <i>Скопируйте любой вариант и используйте в Midjourney, DALL-E, Stable Diffusion или любом другом генераторе изображений!</i>"
+        
+        await callback.message.answer(
+            message,
+            parse_mode="HTML",
+            reply_markup=get_hide_keyboard()
+        )
+        
+        await callback.answer("✅ Промпты сгенерированы!")
+        
     except Exception as e:
-        logger.error(f"Image Error: {e}")
-        await wait.edit_text("❌ Ошибка")
-
-# ... (Остальные методы без изменений) ...
-
-# Замените функцию handle_create_card в handlers.py:
+        logger.error(f"Ошибка генерации промпта: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка генерации промпта", show_alert=True)
 
 async def handle_create_card(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -345,7 +346,6 @@ async def handle_create_card(callback: CallbackQuery):
             if recipe_record and recipe_record.get('image_url'):
                 try:
                     # Скачиваем картинку
-                    import aiohttp
                     async with aiohttp.ClientSession() as session:
                         async with session.get(recipe_record['image_url'], timeout=10) as resp:
                             if resp.status == 200:
@@ -403,7 +403,6 @@ async def handle_fav_add(callback: CallbackQuery):
     user_id = callback.from_user.id
     rid = int(callback.data.replace("fav_add_", ""))
     success = await database.add_to_favorites(user_id, rid)
-    # show_alert=False для тихого уведомления
     msg = "✅ Добавлено в избранное!" if success else "⚠️ Уже в избранном"
     await callback.answer(msg, show_alert=False)
 
@@ -412,34 +411,31 @@ async def handle_restart(callback: CallbackQuery):
     await callback.message.edit_text("✅ Сброшено")
     await callback.answer()
 
-async def handle_limit_exceeded(callback: CallbackQuery):
-    await callback.answer("❌ Лимит исчерпан", show_alert=False)
-
-async def handle_delete_msg(c): 
+async def handle_delete_msg(c: CallbackQuery): 
     try: await c.message.delete()
     except: pass
 
-async def handle_action_add_more(c): 
+async def handle_action_add_more(c: CallbackQuery): 
     await c.message.edit_text("✏️ Пишите еще продукты:")
 
-async def handle_back_to_categories(c): await handle_action_cook(c)
+async def handle_back_to_categories(c: CallbackQuery): 
+    await handle_action_cook(c)
 
-async def handle_repeat_recipe(c):
+async def handle_repeat_recipe(c: CallbackQuery):
     # Логика повтора...
     await c.answer("Генерирую новый вариант...", show_alert=False)
 
-async def handle_fav_view(c):
+async def handle_fav_view(c: CallbackQuery):
     rid = int(c.data.replace("fav_", ""))
     r = await database.get_favorite_recipe(rid)
-    if r: await c.message.edit_text(r['recipe_text'], parse_mode="HTML")
+    if r: 
+        await c.message.edit_text(r['recipe_text'], parse_mode="HTML")
 
-async def handle_clear_my_history(c):
+async def handle_clear_my_history(c: CallbackQuery):
     await database.clear_user_history(c.from_user.id)
     await c.answer("✅ Очищено", show_alert=False)
 
-# Админка заглушки
-# Замените заглушки админки в handlers.py:
-
+# --- АДМИН ОБРАБОТЧИКИ ---
 async def handle_admin_stats(callback: CallbackQuery):
     """Показывает статистику с графиками"""
     try:
@@ -503,13 +499,12 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_action_cook, F.data == "action_cook")
     dp.callback_query.register(handle_category_selection, F.data.startswith("cat_"))
     dp.callback_query.register(handle_dish_selection, F.data.startswith("dish_"))
-    dp.callback_query.register(handle_generate_image, F.data == "gen_image")
+    dp.callback_query.register(handle_generate_prompt, F.data == "gen_prompt")  # Изменено с handle_generate_image
     dp.callback_query.register(handle_create_card, F.data == "create_card")
     dp.callback_query.register(handle_fav_add, F.data.startswith("fav_add_"))
     dp.callback_query.register(handle_restart, F.data == "restart")
     dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
     dp.callback_query.register(handle_action_add_more, F.data == "action_add_more")
-    dp.callback_query.register(handle_limit_exceeded, F.data == "limit_exceeded")
     dp.callback_query.register(handle_back_to_categories, F.data == "back_to_categories")
     dp.callback_query.register(handle_repeat_recipe, F.data == "repeat_recipe")
     dp.callback_query.register(handle_fav_view, F.data.startswith("fav_"))

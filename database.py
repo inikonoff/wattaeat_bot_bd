@@ -274,7 +274,7 @@ class Database:
             return [dict(r) for r in rows]
     
     async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
-        """Топ продуктов"""
+        """Топ продуктов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
         async with self.pool.acquire() as conn:
             interval = {
                 'week': '7 days',
@@ -282,17 +282,23 @@ class Database:
                 'year': '365 days'
             }.get(period, '30 days')
             
+            # ИСПРАВЛЕННЫЙ ЗАПРОС: разделяем продукты по запятой и пробелу
             rows = await conn.fetch(f"""
                 SELECT 
                     LOWER(TRIM(ingredient)) as name,
                     COUNT(*) as count
                 FROM (
-                    SELECT UNNEST(STRING_TO_ARRAY(products_used, ',')) as ingredient
+                    SELECT UNNEST(REGEXP_SPLIT_TO_ARRAY(products_used, ',\\s*')) as ingredient
                     FROM recipes
                     WHERE created_at >= NOW() - INTERVAL '{interval}'
                     AND products_used IS NOT NULL
+                    AND TRIM(products_used) != ''
                 ) sub
+                WHERE ingredient IS NOT NULL 
+                AND TRIM(ingredient) != ''
+                AND LENGTH(TRIM(ingredient)) > 1
                 GROUP BY LOWER(TRIM(ingredient))
+                HAVING COUNT(*) >= 1
                 ORDER BY count DESC
                 LIMIT $1
             """, limit)

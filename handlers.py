@@ -1,4 +1,3 @@
-python
 import os
 import io
 import logging
@@ -78,7 +77,7 @@ def get_complex_lunch_keyboard():
     """Клавиатура для комплексного обеда (только одна кнопка 'Рецепт')"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Рецепт комплексного обеда", callback_data="dish_complex")],
-        [InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="back_to_categories")]
+        [InlineKeyboardButton(text="⬅️ Назад к категории", callback_data="back_to_categories")]
     ])
 
 def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> InlineKeyboardMarkup:
@@ -104,7 +103,7 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
         callback_data="gen_prompt"
     )])
     
-    # Кнопка создания карточки (ЗАКОММЕНТИРОВАНА)
+    # Кнопка создания карточки (ЗАКОММЕНТИРОВАНА по требованию)
     # buttons.append([InlineKeyboardButton(
     #     text="📤 Поделиться рецептом",
     #     callback_data="create_card"
@@ -199,7 +198,8 @@ async def cmd_start(message: Message):
             "Также можно спросить конкретный рецепт, например: <i>'Дай рецепт пиццы'</i>"
         )
         await message.answer(text, parse_mode="HTML")
-    except:
+    except Exception as e:
+        logger.error(f"Start command error: {e}", exc_info=True)
         await message.answer("👋 Привет!")
 
 async def cmd_author(message: Message):
@@ -211,9 +211,7 @@ async def cmd_stats(message: Message):
         # Получаем последние рецепты пользователя для истории
         user_recipes = await database.get_user_recipes(user_id, limit=5)
         
-        can_generate, remaining, limit = await database.check_image_limit(user_id)
-        limit_text = f"{remaining}/{limit}" if limit != -1 else "∞"
-        
+        # Убрали лимит фото из статистики (по требованию)
         text = f"📊 <b>Статистика:</b>\n\n📝 Рецептов: <b>{len(user_recipes)}</b>\n"
         
         # Показываем историю последних рецептов
@@ -238,7 +236,8 @@ async def cmd_favorites(message: Message):
             await message.answer("❤️ Пусто в избранном")
             return
         await message.answer(f"❤️ <b>Избранное ({len(favs)}):</b>", reply_markup=get_favorites_keyboard(favs), parse_mode="HTML")
-    except: 
+    except Exception as e:
+        logger.error(f"Favorites error: {e}", exc_info=True)
         await message.answer("❌ Ошибка")
 
 async def cmd_admin(message: Message):
@@ -276,8 +275,7 @@ async def handle_direct_recipe(message: Message, text: str):
     # Сохраняем оригинальный текст для отображения в поиске
     original_search_text = dish_name
     
-    # Преобразуем название в именительный падеж (для отображения в рецепте)
-    # Это упрощенная логика - в реальности нужна полноценная библиотека для склонений
+    # Нормализуем название (убираем лишние знаки препинания, оставляем кавычки если были)
     dish_name_display = dish_name.strip('"\'')
     
     # Простая нормализация: первая буква заглавная, остальные строчные
@@ -288,7 +286,14 @@ async def handle_direct_recipe(message: Message, text: str):
     # Убираем лишние знаки препинания в конце
     dish_name_display = dish_name_display.rstrip('.!?,;')
     
-    wait = await message.answer(f"Ищу рецепт {original_search_text}", parse_mode="HTML")
+    # Формируем сообщение поиска без знаков препинания и обычным шрифтом
+    search_message = f"Ищу рецепт {original_search_text}"
+    # Убираем кавычки если они были только в начале и конце
+    if original_search_text.startswith('"') and original_search_text.endswith('"'):
+        search_message = f'Ищу рецепт {original_search_text.strip('"')}'
+    
+    wait = await message.answer(search_message, parse_mode="HTML")
+    
     try:
         # Генерируем рецепт с нормализованным названием
         recipe = await groq_service.generate_freestyle_recipe(dish_name_display)
@@ -415,6 +420,15 @@ async def handle_dish_selection(callback: CallbackQuery):
             
             # Генерируем рецепт комплексного обеда
             recipe = await groq_service.generate_recipe(dish_name, products)
+            
+            # ВАЛИДАЦИЯ РЕЦЕПТА (дополнительная проверка)
+            is_valid, issues = await groq_service.validate_recipe_consistency(products, recipe)
+            
+            if not is_valid:
+                logger.warning(f"Complex lunch validation failed: {issues}")
+                # Пробуем перегенерировать
+                recipe = await groq_service.regenerate_recipe_without_missing(dish_name, products, recipe, issues)
+            
             await wait.delete()
             
             await state_manager.set_current_dish(user_id, dish_name)
@@ -443,6 +457,15 @@ async def handle_dish_selection(callback: CallbackQuery):
     
     try:
         recipe = await groq_service.generate_recipe(selected['name'], products)
+        
+        # ВАЛИДАЦИЯ РЕЦЕПТА (дополнительная проверка)
+        is_valid, issues = await groq_service.validate_recipe_consistency(products, recipe)
+        
+        if not is_valid:
+            logger.warning(f"Recipe validation failed for '{selected['name']}': {issues}")
+            # Пробуем перегенерировать
+            recipe = await groq_service.regenerate_recipe_without_missing(selected['name'], products, recipe, issues)
+        
         await wait.delete()
         
         await state_manager.set_current_dish(user_id, selected['name'])
@@ -611,6 +634,15 @@ async def handle_repeat_recipe(c: CallbackQuery):
     try:
         # Генерируем новый вариант рецепта
         recipe = await groq_service.generate_recipe(dish_name, products)
+        
+        # ВАЛИДАЦИЯ РЕЦЕПТА (дополнительная проверка)
+        is_valid, issues = await groq_service.validate_recipe_consistency(products, recipe)
+        
+        if not is_valid:
+            logger.warning(f"Recipe validation failed on repeat: {issues}")
+            # Пробуем перегенерировать
+            recipe = await groq_service.regenerate_recipe_without_missing(dish_name, products, recipe, issues)
+        
         await wait.delete()
         
         recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)

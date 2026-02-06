@@ -19,6 +19,24 @@ class GroqService:
 👑 ОДИН ГЛАВНЫЙ ИНГРЕДИЕНТ: В каждом блюде один "король".
 ❌ ТАБУ: Рыба + Молочные продукты (в горячем), два сильных мяса в одной композиции."""
 
+    # Словарь для определения языка
+    LANGUAGE_KEYWORDS = {
+        'german': ['kartoffel', 'zwiebel', 'karotte', 'tomate', 'gurke', 'käse', 'fleisch', 'wurst', 'brötchen'],
+        'english': ['potato', 'onion', 'carrot', 'tomato', 'cucumber', 'cheese', 'meat', 'bread', 'butter'],
+        'french': ['pomme de terre', 'oignon', 'carotte', 'tomate', 'concombre', 'fromage', 'viande', 'pain'],
+        'spanish': ['patata', 'cebolla', 'zanahoria', 'tomate', 'pepino', 'queso', 'carne', 'pan'],
+        'italian': ['patata', 'cipolla', 'carota', 'pomodoro', 'cetriolo', 'formaggio', 'carne', 'pane']
+    }
+    
+    # Карта национальных кухонь
+    NATIONAL_CUISINES = {
+        'german': 'Немецкая кухня (bratwurst, sauerkraut, schnitzel, kartoffelsalat)',
+        'english': 'Английская кухня (roast beef, fish and chips, shepherd\'s pie)',
+        'french': 'Французская кухня (ratatouille, coq au vin, quiche lorraine)',
+        'spanish': 'Испанская кухня (paella, gazpacho, tortilla española)',
+        'italian': 'Итальянская кухня (pasta, pizza, risotto, tiramisu)'
+    }
+
     def __init__(self):
         self.clients = []
         self.current_client_index = 0
@@ -166,16 +184,62 @@ class GroqService:
             logger.error(f"Transcription error: {e}")
             return f"❌ Ошибка распознавания: {str(e)[:100]}"
     
+    # ==================== ЯЗЫКОВЫЕ ФУНКЦИИ ====================
+    
+    def detect_language_from_products(self, products: str) -> tuple[str, list]:
+        """Определяет язык продуктов и возвращает иностранные слова"""
+        products_lower = products.lower()
+        detected_languages = []
+        foreign_words = []
+        
+        for lang, keywords in self.LANGUAGE_KEYWORDS.items():
+            lang_words = []
+            for keyword in keywords:
+                # Ищем целые слова, чтобы избежать частичных совпадений
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+                if re.search(pattern, products_lower):
+                    lang_words.append(keyword)
+            
+            if lang_words:
+                detected_languages.append(lang)
+                foreign_words.extend(lang_words)
+        
+        # Возвращаем основной язык (первый обнаруженный) и список иностранных слов
+        main_language = detected_languages[0] if detected_languages else 'russian'
+        return main_language, foreign_words
+    
+    def create_language_context(self, language: str, foreign_words: list) -> str:
+        """Создает контекст для иностранных продуктов"""
+        if language == 'russian' or not foreign_words:
+            return ""
+        
+        # Создаем перевод иностранных слов
+        translations = ", ".join([f"{word} (ингредиент)" for word in foreign_words])
+        cuisine = self.NATIONAL_CUISINES.get(language, "международная кухня")
+        
+        return f"""
+🌍 ИНОСТРАННЫЕ ПРОДУКТЫ:
+Обнаружены продукты на {language} языке: {translations}
+Рекомендую использовать {cuisine}.
+В рецепте указывай иностранные названия с переводом в скобках, например: "Kartoffeln (картофель)".
+"""
+    
     # ==================== АНАЛИЗ И КАТЕГОРИИ ====================
     
     async def analyze_categories(self, products: str) -> List[str]:
         """Определяет категории блюд на основе продуктов"""
         safe_products = self._sanitize_input(products, max_length=300)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_products)
+        language_context = self.create_language_context(language, foreign_words)
+        
         items = re.split(r'[,;\n]', safe_products)
         items_count = len([i for i in items if len(i.strip()) > 1])
         mix_available = items_count >= 8
         
         prompt = f"""Analyze these products: {safe_products}
+{language_context}
 Return a JSON ARRAY of category strings from: ["breakfast", "soup", "main", "salad", "dessert", "drink", "snack", "mix"]
 
 Example response: ["main", "soup", "salad"]
@@ -213,8 +277,13 @@ Return ONLY the JSON array, no other text."""
         """Генерирует список блюд для категории"""
         safe_products = self._sanitize_input(products, max_length=400)
         
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_products)
+        language_context = self.create_language_context(language, foreign_words)
+        
         if category == "mix":
             prompt = f"""Create ONE full meal with 4 dishes using: {safe_products}
+{language_context}
 
 Return JSON ARRAY with exactly 4 objects:
 [
@@ -227,6 +296,7 @@ Return JSON ARRAY with exactly 4 objects:
 Return ONLY the JSON array."""
         else:
             prompt = f"""Suggest 5-6 dishes for category '{category}' using: {safe_products}
+{language_context}
 
 Return JSON ARRAY:
 [{{"name": "Dish name", "desc": "Short appetizing description"}}]
@@ -253,11 +323,17 @@ Return ONLY the JSON array."""
         """Генерация полного рецепта"""
         safe_dish = self._sanitize_input(dish_name, max_length=150)
         safe_prods = self._sanitize_input(products, max_length=600)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_prods)
+        language_context = self.create_language_context(language, foreign_words)
+        
         is_mix = "полный обед" in safe_dish.lower() or "комплекс" in safe_dish.lower()
         instruction = "🍱 ПОЛНЫЙ ОБЕД ИЗ 4 БЛЮД." if is_mix else "Напиши рецепт одного блюда."
         
         prompt = f"""Ты профессиональный шеф. Напиши рецепт: "{safe_dish}"
 🛒 ПРОДУКТЫ: {safe_prods}
+{language_context}
 📦 БАЗА (всегда доступно): соль, сахар, вода, масло, специи.
 
 {self.FLAVOR_RULES}
@@ -299,7 +375,11 @@ Return ONLY the JSON array."""
         """Генерация рецепта без продуктов (креативный режим)"""
         safe_dish = self._sanitize_input(dish_name, max_length=100)
         
-        prompt = f"""Ты креативный шеф-повар. Создай рецепт: "{safe_dish}"
+        # Нормализуем название блюда (именительный падеж)
+        # В реальном приложении здесь нужна полноценная библиотека для морфологии
+        normalized_dish = self._normalize_dish_name(safe_dish)
+        
+        prompt = f"""Ты креативный шеф-повар. Создай рецепт: "{normalized_dish}"
 
 {self.FLAVOR_RULES}
 
@@ -309,7 +389,7 @@ Return ONLY the JSON array."""
 - Для списков используй тире "-" или эмодзи "🔸".
 
 📋 СТРОГИЙ ФОРМАТ:
-<b>{safe_dish}</b>
+<b>{normalized_dish}</b>
 
 📦 <b>Ингредиенты:</b>
 🔸 [Название] — [количество]
@@ -334,6 +414,20 @@ Return ONLY the JSON array."""
         
         raw_html = await self._send_groq_request(prompt, "Create recipe", task_type="freestyle", temperature=0.6, max_tokens=2000)
         return self._clean_html_for_telegram(raw_html) + "\n\n👨‍🍳 <b>Приятного аппетита!</b>"
+    
+    def _normalize_dish_name(self, dish_name: str) -> str:
+        """Нормализует название блюда (упрощенная версия)"""
+        # Удаляем кавычки, если они только в начале и конце
+        dish_name = dish_name.strip().strip('"\'')
+        
+        # Простая нормализация: первая буква заглавная
+        if dish_name and dish_name[0].islower():
+            dish_name = dish_name[0].upper() + dish_name[1:]
+        
+        # Убираем лишние знаки препинания в конце
+        dish_name = dish_name.rstrip('.!?,;')
+        
+        return dish_name
     
     # ==================== ПАРСИНГ РЕЦЕПТА ДЛЯ КАРТОЧКИ ====================
     

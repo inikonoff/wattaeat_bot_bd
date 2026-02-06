@@ -290,7 +290,7 @@ async def handle_direct_recipe(message: Message, text: str):
     search_message = f"Ищу рецепт {original_search_text}"
     # Убираем кавычки если они были только в начале и конце
     if original_search_text.startswith('"') and original_search_text.endswith('"'):
-        search_message = f'Ищу рецепт {original_search_text.strip('"')}'
+        search_message = f"Ищу рецепт {original_search_text.strip('"')}"
     
     wait = await message.answer(search_message, parse_mode="HTML")
     

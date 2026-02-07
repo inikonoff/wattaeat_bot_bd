@@ -120,7 +120,7 @@ class GroqService:
 
 ТЫ СТРОГО СОБЛЮДАЕШЬ ВСЕ КУЛИНАРНЫЕ ПРАВИЛА ВО ВСЕХ ОТВЕТАХ.
 
-{FLAMOR_RULES}
+{FLAVOR_RULES}
 {CULINARY_TRIAD}
 {LANGUAGE_RULES}
 {RECIPE_VALIDATION_RULES}

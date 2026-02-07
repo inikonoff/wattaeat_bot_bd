@@ -572,7 +572,7 @@ Return ONLY the JSON array."""
 - Используй стандартные кухонные инструменты
 
 📋 ФОРМАТ РЕЦЕПТА (Telegram HTML):
-<b>{normalized_dish}</b>
+{normalized_dish}
 
 📦 <b>Ингредиенты:</b>
 🔸 [Название] — [количество]

@@ -199,39 +199,42 @@ async def cmd_start(message: Message):
         )
         await message.answer(text, parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Start command error: {e}", exc_info=True)
-        await message.answer("👋 Привет!")
+        logger.error(f"Start error: {e}", exc_info=True)
 
 async def cmd_author(message: Message):
-    await message.answer("👨‍💻 Автор бота: @inikonoff")
+    text = (
+        "👨‍💻 <b>Разработчик бота:</b>\n\n"
+        "Иван Никифоров\n"
+        "Telegram: @ivi4an\n\n"
+        "Спасибо что пользуетесь!"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 async def cmd_stats(message: Message):
+    user_id = message.from_user.id
     try:
-        user_id = message.from_user.id
-        # Получаем последние рецепты пользователя для истории
-        user_recipes = await database.get_user_recipes(user_id, limit=5)
+        stats = await database.get_user_stats(user_id)
+        history = await database.get_user_recipes(user_id)
         
-        # Убрали лимит фото из статистики (по требованию)
-        text = f"📊 <b>Статистика:</b>\n\n📝 Рецептов: <b>{len(user_recipes)}</b>\n"
-        
-        # Показываем историю последних рецептов
-        if user_recipes:
-            text += f"\n<b>Последние рецепты:</b>\n"
-            for i, recipe in enumerate(user_recipes[:5], 1):
-                text += f"{i}. {recipe['dish_name'][:30]}\n"
-        
-        await message.answer(
-            text, 
-            reply_markup=get_stats_keyboard(user_id, user_recipes), 
-            parse_mode="HTML"
+        text = (
+            f"📊 <b>Ваша статистика:</b>\n\n"
+            f"🧾 Всего рецептов: {stats['total_recipes']}\n"
+            f"❤️ В избранном: {stats['favorites']}\n\n"
+            f"🏆 <b>Ваши достижения:</b>\n"
+            f"{'🥇 Кулинарный мастер (50+ рецептов)' if stats['total_recipes'] >= 50 else ''}\n"
+            f"{'🔥 Активный кулинар (20+ рецептов)' if stats['total_recipes'] >= 20 else ''}\n"
+            f"{'👨‍🍳 Начинающий повар (5+ рецептов)' if stats['total_recipes'] >= 5 else ''}"
         )
+        
+        await message.answer(text, reply_markup=get_stats_keyboard(user_id, history), parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Error in stats: {e}", exc_info=True)
-        await message.answer("❌ Ошибка получения статистики")
+        logger.error(f"Stats error: {e}", exc_info=True)
+        await message.answer("❌ Ошибка загрузки статистики")
 
 async def cmd_favorites(message: Message):
+    user_id = message.from_user.id
     try:
-        favs = await database.get_user_favorites(message.from_user.id)
+        favs = await database.get_user_favorites(user_id)
         if not favs:
             await message.answer("❤️ Пусто в избранном")
             return
@@ -286,14 +289,13 @@ async def handle_direct_recipe(message: Message, text: str):
     # Убираем лишние знаки препинания в конце
     dish_name_display = dish_name_display.rstrip('.!?,;')
     
-    # Формируем сообщение поиска без знаков препинания и обычным шрифтом
-    search_message = f"Ищу рецепт {original_search_text}"
+    # ИСПРАВЛЕНИЕ: Формируем сообщение поиска БЕЗ жирного шрифта
     # Убираем кавычки если они были только в начале и конце
-    if original_search_text.startswith('"') and original_search_text.endswith('"'):
-        clean_text = original_search_text.strip('"')
-        search_message = f"Ищу рецепт {clean_text}"
+    clean_text = original_search_text.strip('"\'')
+    search_message = f"Ищу рецепт {clean_text}"
     
-    wait = await message.answer(search_message, parse_mode="HTML")
+    # Отправляем БЕЗ parse_mode чтобы избежать любого форматирования
+    wait = await message.answer(search_message)
     
     try:
         # Генерируем рецепт с нормализованным названием
@@ -330,209 +332,198 @@ async def handle_voice(message: Message):
         text = await groq_service.transcribe_voice(buffer.getvalue())
         await processing_msg.delete()
         
-        if "дай рецепт" in text.lower() or "рецепт" in text.lower():
+        if "дай рецепт" in text.lower() or text.lower().startswith("рецепт"):
             await handle_direct_recipe(message, text)
         else:
             await process_products_input(message, user_id, text)
     except Exception as e:
         await processing_msg.delete()
-        logger.error(f"Voice recognition error: {e}", exc_info=True)
-        await message.answer("❌ Не удалось распознать")
+        logger.error(f"Voice error: {e}", exc_info=True)
+        await message.answer("❌ Ошибка распознавания")
 
 # --- CALLBACK HANDLERS ---
 
-async def handle_action_cook(callback: CallbackQuery):
-    user_id = callback.from_user.id
+async def handle_action_cook(c: CallbackQuery):
+    user_id = c.from_user.id
     products = await state_manager.get_products(user_id)
     if not products:
-        await callback.answer("❌ Нет продуктов", show_alert=False)
+        await c.answer("❌ Сначала укажите продукты", show_alert=True)
         return
-    wait = await callback.message.edit_text("🔍 Анализирую продукты...")
-    try:
-        categories = await groq_service.analyze_categories(products)
-        await wait.edit_text(f"✅ Продукты: <b>{products}</b>\n\n🍽️ <b>Категория:</b>", reply_markup=get_categories_keyboard(categories), parse_mode="HTML")
-    except Exception as e:
-        await wait.edit_text("❌ Ошибка анализа")
-        logger.error(f"Category analysis error: {e}", exc_info=True)
-
-async def handle_category_selection(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    category = callback.data.replace("cat_", "")
-    products = await state_manager.get_products(user_id)
     
-    wait = await callback.message.edit_text(f"🔍 Ищу рецепты ({category})...")
+    wait = await c.message.edit_text("📊 Анализирую продукты...")
     
     try:
-        dishes = await groq_service.generate_dishes_list(products, category)
+        categories_json = await groq_service.get_categories_for_products(products)
+        available_categories = list(categories_json.keys())
         
-        if not dishes:
-            await wait.edit_text("❌ Не удалось найти рецепты для этой категории")
-            return
+        await state_manager.set_categories(user_id, categories_json)
         
-        await state_manager.set_dishes_list(user_id, dishes)
+        text = f"👨‍🍳 Выберите категорию блюда:\n\n📦 Ваши продукты: <b>{products}</b>"
+        await wait.edit_text(text, reply_markup=get_categories_keyboard(available_categories), parse_mode="HTML")
         
-        if category == "mix":
-            # Для комплексного обеда показываем описание и одну кнопку
-            description = "🍱 <b>Комплексный обед</b>\n\n"
-            for i, dish in enumerate(dishes[:4], 1):
-                description += f"<b>{i}. {dish['name']}</b>\n{dish['desc']}\n\n"
-            
-            await wait.edit_text(
-                description,
-                reply_markup=get_complex_lunch_keyboard(),
-                parse_mode="HTML"
-            )
-        else:
-            # Для обычных категорий показываем список блюд с описаниями
-            description = f"🍽️ <b>Выберите блюдо:</b>\n\n"
-            for i, dish in enumerate(dishes, 1):
-                description += f"<b>{i}. {dish['name']}</b>\n{dish['desc']}\n\n"
-            
-            await wait.edit_text(
-                description,
-                reply_markup=get_dishes_keyboard(dishes, category),
-                parse_mode="HTML"
-            )
-            
     except Exception as e:
-        await wait.edit_text("❌ Ошибка при поиске рецептов")
-        logger.error(f"Dish generation error: {e}", exc_info=True)
+        logger.error(f"Cook error: {e}", exc_info=True)
+        await wait.edit_text("❌ Ошибка анализа продуктов")
 
-async def handle_dish_selection(callback: CallbackQuery):
-    user_id = callback.from_user.id
+async def handle_category_selection(c: CallbackQuery):
+    user_id = c.from_user.id
+    category = c.data.replace("cat_", "")
     
-    # Проверяем, это комплексный обед или отдельное блюдо
-    if callback.data == "dish_complex":
-        # Для комплексного обеда получаем все блюда
-        dishes = await state_manager.get_dishes_list(user_id)
+    if category == "mix":
+        # Для комплексного обеда показываем только кнопку "Рецепт"
+        await state_manager.set_category(user_id, category)
         products = await state_manager.get_products(user_id)
+        category_name = CATEGORY_MAP.get(category, category.capitalize())
+        text = f"🍱 Категория: <b>{category_name}</b>\n\n📦 Продукты: {products}"
+        await c.message.edit_text(text, reply_markup=get_complex_lunch_keyboard(), parse_mode="HTML")
+        return
+    
+    wait = await c.message.edit_text(f"🍽️ Подбираю блюда категории <b>{CATEGORY_MAP.get(category, category)}</b>...", parse_mode="HTML")
+    
+    try:
+        await state_manager.set_category(user_id, category)
         
-        if not dishes or len(dishes) < 4:
-            await callback.answer("❌ Нет данных для комплексного обеда", show_alert=True)
-            return
+        products = await state_manager.get_products(user_id)
+        categories = await state_manager.get_categories(user_id)
+        dishes = categories.get(category, [])
         
-        wait = await callback.message.edit_text("⚡️ Пишу рецепт комплексного обеда...")
+        await state_manager.set_dishes(user_id, dishes)
+        
+        category_name = CATEGORY_MAP.get(category, category.capitalize())
+        text = f"🍽️ Категория: <b>{category_name}</b>\n\n📦 Продукты: {products}"
+        await wait.edit_text(text, reply_markup=get_dishes_keyboard(dishes, category), parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"Category selection error: {e}", exc_info=True)
+        await wait.edit_text("❌ Ошибка")
+
+async def handle_dish_selection(c: CallbackQuery):
+    user_id = c.from_user.id
+    
+    # Проверяем специальный случай комплексного обеда
+    if c.data == "dish_complex":
+        products = await state_manager.get_products(user_id)
+        wait = await c.message.edit_text("👨‍🍳 Создаю комплексный обед...", parse_mode="HTML")
         
         try:
-            # Создаем описание для комплексного обеда
-            dish_name = "Комплексный обед"
-            dish_names = [dish['name'] for dish in dishes[:4]]
-            dish_name += f" ({', '.join(dish_names)})"
-            
-            # Генерируем рецепт комплексного обеда
-            recipe = await groq_service.generate_recipe(dish_name, products)
-            
-            # ВАЛИДАЦИЯ РЕЦЕПТА (дополнительная проверка)
-            is_valid, issues = await groq_service.validate_recipe_consistency(products, recipe)
-            
-            if not is_valid:
-                logger.warning(f"Complex lunch validation failed: {issues}")
-                # Пробуем перегенерировать
-                recipe = await groq_service.regenerate_recipe_without_missing(dish_name, products, recipe, issues)
-            
+            recipe = await groq_service.generate_complex_lunch(products)
             await wait.delete()
             
-            await state_manager.set_current_dish(user_id, dish_name)
-            recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
+            await state_manager.set_current_dish(user_id, "Комплексный обед")
+            await state_manager.set_state(user_id, "recipe_sent")
+            recipe_id = await state_manager.save_recipe_to_history(user_id, "Комплексный обед", recipe)
             
-            await callback.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+            await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+            await c.answer()
         except Exception as e:
             await wait.delete()
             logger.error(f"Complex lunch error: {e}", exc_info=True)
-            await callback.answer("❌ Ошибка генерации рецепта", show_alert=True)
-        
+            await c.answer("❌ Ошибка генерации", show_alert=True)
         return
     
-    # Обычное блюдо
-    idx = int(callback.data.replace("dish_", ""))
-    dishes = await state_manager.get_dishes_list(user_id)
-    
-    if idx < 0 or idx >= len(dishes):
-        await callback.answer("❌ Блюдо не найдено", show_alert=True)
-        return
-    
-    selected = dishes[idx]
+    # Обычный выбор блюда
+    dish_idx = int(c.data.replace("dish_", ""))
     products = await state_manager.get_products(user_id)
+    dishes = await state_manager.get_dishes(user_id)
     
-    wait = await callback.message.edit_text(f"⚡️ Пишу рецепт: <b>{selected['name']}</b>...", parse_mode="HTML")
+    if dish_idx >= len(dishes):
+        await c.answer("❌ Блюдо не найдено", show_alert=True)
+        return
+    
+    dish = dishes[dish_idx]
+    dish_name = dish.get("name", "Неизвестное блюдо")
+    
+    wait = await c.message.edit_text(f"👨‍🍳 Готовлю рецепт: <b>{dish_name}</b>...", parse_mode="HTML")
     
     try:
-        recipe = await groq_service.generate_recipe(selected['name'], products)
+        recipe = await groq_service.generate_recipe(dish_name, products)
         
-        # ВАЛИДАЦИЯ РЕЦЕПТА (дополнительная проверка)
+        # ВАЛИДАЦИЯ РЕЦЕПТА
         is_valid, issues = await groq_service.validate_recipe_consistency(products, recipe)
         
         if not is_valid:
-            logger.warning(f"Recipe validation failed for '{selected['name']}': {issues}")
-            # Пробуем перегенерировать
-            recipe = await groq_service.regenerate_recipe_without_missing(selected['name'], products, recipe, issues)
+            logger.warning(f"Recipe validation failed: {issues}")
+            # Пробуем перегенерировать без недостающих ингредиентов
+            recipe = await groq_service.regenerate_recipe_without_missing(dish_name, products, recipe, issues)
         
         await wait.delete()
         
-        await state_manager.set_current_dish(user_id, selected['name'])
-        recipe_id = await state_manager.save_recipe_to_history(user_id, selected['name'], recipe)
+        await state_manager.set_current_dish(user_id, dish_name)
+        await state_manager.set_state(user_id, "recipe_sent")
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
         
-        await callback.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        await c.answer()
+        
     except Exception as e:
         await wait.delete()
-        logger.error(f"Recipe generation error: {e}", exc_info=True)
-        await callback.answer("❌ Ошибка генерации рецепта", show_alert=True)
+        logger.error(f"Recipe error: {e}", exc_info=True)
+        await c.answer("❌ Ошибка генерации", show_alert=True)
 
 async def handle_generate_prompt(callback: CallbackQuery):
-    """Генерирует промпт для создания изображения"""
+    """Генерация промпта для Midjourney/DALL-E"""
     user_id = callback.from_user.id
     dish_name = await state_manager.get_current_dish(user_id)
     
     if not dish_name:
-        await callback.answer("❌ Блюдо не найдено. Сначала выберите рецепт.", show_alert=True)
+        await callback.answer("❌ Блюдо не найдено", show_alert=True)
         return
     
+    wait = await callback.message.answer("🎨 Генерирую промпт для изображения...")
+    
     try:
-        # Генерируем 3 варианта промптов
-        prompts = image_prompt_generator.generate_multiple_variants(dish_name, count=3)
+        prompt = await image_prompt_generator.generate_prompt(dish_name)
         
-        # Формируем сообщение
-        message = f"🎨 <b>Промпты для генерации изображения:</b>\n\n"
-        message += f"📝 <b>Блюдо:</b> {dish_name}\n\n"
+        await wait.delete()
         
-        for i, prompt in enumerate(prompts, 1):
-            message += f"<b>Вариант {i}:</b>\n"
-            message += f"<code>{prompt}</code>\n\n"
-        
-        message += "💡 <i>Скопируйте любой вариант и используйте в Midjourney, DALL-E, Stable Diffusion или любом другом генераторе изображений!</i>"
-        
-        await callback.message.answer(
-            message,
-            parse_mode="HTML",
-            reply_markup=get_hide_keyboard()
+        prompt_text = (
+            f"🎨 <b>Промпт для генерации изображения:</b>\n\n"
+            f"<code>{prompt}</code>\n\n"
+            f"💡 Скопируйте этот промпт и используйте в Midjourney, DALL-E или других генераторах изображений."
         )
         
-        await callback.answer("✅ Промпты сгенерированы!")
+        await callback.message.answer(prompt_text, reply_markup=get_hide_keyboard(), parse_mode="HTML")
+        await callback.answer("✅ Промпт готов!")
         
     except Exception as e:
-        logger.error(f"Ошибка генерации промпта: {e}", exc_info=True)
+        await wait.delete()
+        logger.error(f"Prompt generation error: {e}", exc_info=True)
         await callback.answer("❌ Ошибка генерации промпта", show_alert=True)
 
-async def handle_create_card(callback: CallbackQuery):
-    # Кнопка закомментирована, но обработчик оставляем для обратной совместимости
-    await callback.answer("Функция временно недоступна", show_alert=True)
+async def handle_create_card(c: CallbackQuery):
+    """Создание карточки рецепта (ОТКЛЮЧЕНО)"""
+    await c.answer("❌ Функция временно отключена", show_alert=True)
 
 async def handle_fav_add(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    rid = int(callback.data.replace("fav_add_", ""))
-    success = await database.add_to_favorites(user_id, rid)
-    msg = "✅ Добавлено в избранное!" if success else "⚠️ Уже в избранном"
-    await callback.answer(msg, show_alert=False)
+    """Добавление рецепта в избранное"""
+    try:
+        recipe_id = int(callback.data.replace("fav_add_", ""))
+        user_id = callback.from_user.id
+        
+        # Проверяем, не в избранном ли уже
+        already_favorite = await database.is_recipe_favorite(recipe_id)
+        
+        if already_favorite:
+            await callback.answer("❤️ Уже в избранном!", show_alert=False)
+            return
+        
+        # Добавляем в избранное
+        success = await database.add_to_favorites(recipe_id)
+        
+        if success:
+            await callback.answer("✅ Добавлено в избранное!", show_alert=False)
+        else:
+            await callback.answer("❌ Не удалось добавить", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Ошибка добавления в избранное: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка", show_alert=True)
 
 async def handle_fav_view(callback: CallbackQuery):
     """Просмотр избранного рецепта"""
     try:
-        # Извлекаем recipe_id, игнорируя префикс fav_delete_
-        callback_data = callback.data
-        if callback_data.startswith("fav_delete_"):
-            return  # Этот случай обрабатывается в handle_fav_delete
-        
-        recipe_id = int(callback_data.replace("fav_", ""))
+        recipe_id = int(callback.data.replace("fav_", ""))
+        user_id = callback.from_user.id
         
         recipe = await database.get_favorite_recipe(recipe_id)
         
@@ -540,8 +531,8 @@ async def handle_fav_view(callback: CallbackQuery):
             await callback.answer("❌ Рецепт не найден", show_alert=True)
             return
         
-        # Сохраняем информацию о текущем блюде для генерации промпта
-        await state_manager.set_current_dish(callback.from_user.id, recipe['dish_name'])
+        # Сохраняем информацию о текущем блюде
+        await state_manager.set_current_dish(user_id, recipe['dish_name'])
         
         await callback.message.edit_text(
             recipe['recipe_text'],

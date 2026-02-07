@@ -262,46 +262,35 @@ async def handle_direct_recipe(message: Message, text: str):
     """Прямой поиск рецепта по названию"""
     user_id = message.from_user.id
     
-    # Очищаем текст от команд
-    dish_name = text.lower().strip()
+    # Убираем только "дай " в начале (без изменения регистра)
+    dish_request = text.strip()
     
-    # Удаляем команды ТОЛЬКО в начале строки
-    commands = [
-        "дай рецепт ",
-        "покажи рецепт ",
-        "напиши рецепт ",
-        "рецепт ",
-    ]
+    if dish_request.lower().startswith("дай "):
+        dish_request = dish_request[4:].strip()  # Удаляем "дай "
     
-    for cmd in commands:
-        if dish_name.startswith(cmd):
-            dish_name = dish_name[len(cmd):].strip()
-            break
-    
-    if len(dish_name) < 2:
+    # Проверяем минимальную длину
+    if len(dish_request) < 2:
         await message.answer("Напишите название блюда, например: <i>Дай рецепт борща</i>", parse_mode="HTML")
         return
     
-    # Нормализуем: первая буква заглавная
-    if dish_name and dish_name[0].islower():
-        dish_name = dish_name[0].upper() + dish_name[1:]
+    # Для сообщения "Ищу..." используем текст как есть
+    search_message = f"Ищу {dish_request}"
     
-    # Убираем лишние знаки препинания в конце
-    dish_name = dish_name.rstrip('.!?,;')
-    
-    # Формируем сообщение поиска
-    search_message = f"Ищу рецепт {dish_name}"
+    # Для заголовка рецепта делаем первую букву заглавной
+    dish_title = dish_request
+    if dish_title and dish_title[0].islower():
+        dish_title = dish_title[0].upper() + dish_title[1:]
     
     wait = await message.answer(search_message)
     
     try:
-        # Генерируем рецепт с нормализованным названием
-        recipe = await groq_service.generate_freestyle_recipe(dish_name)
+        # Генерируем рецепт с заголовком (первая буква заглавная)
+        recipe = await groq_service.generate_freestyle_recipe(dish_title)
         await wait.delete()
         
-        await state_manager.set_current_dish(user_id, dish_name)
+        await state_manager.set_current_dish(user_id, dish_title)
         await state_manager.set_state(user_id, "recipe_sent")
-        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_title, recipe)
         
         await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
     except Exception as e:

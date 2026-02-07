@@ -277,9 +277,14 @@ async def handle_direct_recipe(message: Message, text: str):
         
         await state_manager.set_current_dish(user_id, dish_title)
         await state_manager.set_state(user_id, "recipe_sent")
+        
+        # Сохраняем рецепт и получаем его ID
         recipe_id = await state_manager.save_recipe_to_history(user_id, dish_title, recipe)
         
-        await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        if recipe_id:
+            await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        else:
+            await message.answer(recipe, parse_mode="HTML")
     except Exception as e:
         await wait.delete()
         logger.error(f"Recipe error: {e}", exc_info=True)
@@ -386,7 +391,10 @@ async def handle_dish_selection(c: CallbackQuery):
             await state_manager.set_state(user_id, "recipe_sent")
             recipe_id = await state_manager.save_recipe_to_history(user_id, "Комплексный обед", recipe)
             
-            await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+            if recipe_id:
+                await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+            else:
+                await c.message.answer(recipe, parse_mode="HTML")
             await c.answer()
         except Exception as e:
             await wait.delete()
@@ -425,7 +433,10 @@ async def handle_dish_selection(c: CallbackQuery):
         await state_manager.set_state(user_id, "recipe_sent")
         recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
         
-        await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        if recipe_id:
+            await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        else:
+            await c.message.answer(recipe, parse_mode="HTML")
         await c.answer()
         
     except Exception as e:
@@ -473,15 +484,21 @@ async def handle_fav_add(callback: CallbackQuery):
         recipe_id = int(callback.data.replace("fav_add_", ""))
         user_id = callback.from_user.id
         
-        # Проверяем, не в избранном ли уже
-        already_favorite = await database.is_recipe_favorite(recipe_id)
+        # Проверяем, не в избранном ли уже у этого пользователя
+        already_favorite = await database.is_recipe_favorite(user_id, recipe_id)
         
         if already_favorite:
             await callback.answer("❤️ Уже в избранном!", show_alert=False)
             return
         
+        # Проверяем, существует ли рецепт у пользователя
+        recipe = await database.get_recipe_by_id(user_id, recipe_id)
+        if not recipe:
+            await callback.answer("❌ Рецепт не найден", show_alert=True)
+            return
+        
         # Добавляем в избранное
-        success = await database.add_to_favorites(recipe_id)
+        success = await database.add_to_favorites(user_id, recipe_id)
         
         if success:
             await callback.answer("✅ Добавлено в избранное!", show_alert=False)
@@ -498,10 +515,15 @@ async def handle_fav_view(callback: CallbackQuery):
         recipe_id = int(callback.data.replace("fav_", ""))
         user_id = callback.from_user.id
         
-        recipe = await database.get_favorite_recipe(recipe_id)
+        recipe = await database.get_recipe_by_id(user_id, recipe_id)
         
         if not recipe:
             await callback.answer("❌ Рецепт не найден", show_alert=True)
+            return
+        
+        # Проверяем, что рецепт действительно в избранном
+        if not recipe.get('is_favorite'):
+            await callback.answer("❌ Рецепт не в избранном", show_alert=True)
             return
         
         # Сохраняем информацию о текущем блюде
@@ -524,8 +546,8 @@ async def handle_fav_delete(callback: CallbackQuery):
         recipe_id = int(callback.data.replace("fav_delete_", ""))
         user_id = callback.from_user.id
         
-        # Удаляем из избранного (меняем флаг is_favorite на FALSE)
-        success = await database.remove_from_favorites(recipe_id)
+        # Удаляем из избранного
+        success = await database.remove_from_favorites(user_id, recipe_id)
         
         if success:
             await callback.message.edit_text(
@@ -536,7 +558,7 @@ async def handle_fav_delete(callback: CallbackQuery):
             )
             await callback.answer("✅ Удалено!")
         else:
-            await callback.answer("❌ Не удалось удалить", show_alert=True)
+            await callback.answer("❌ Не удалось удалить или рецепт не найден", show_alert=True)
         
     except Exception as e:
         logger.error(f"Ошибка удаления из избранного: {e}", exc_info=True)
@@ -548,7 +570,7 @@ async def handle_history_view(callback: CallbackQuery):
         recipe_id = int(callback.data.replace("history_", ""))
         user_id = callback.from_user.id
         
-        recipe = await database.get_favorite_recipe(recipe_id)
+        recipe = await database.get_recipe_by_id(user_id, recipe_id)
         
         if not recipe:
             await callback.answer("❌ Рецепт не найден", show_alert=True)
@@ -569,23 +591,33 @@ async def handle_history_view(callback: CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
 
 async def handle_restart(callback: CallbackQuery):
-    await state_manager.clear_session(callback.from_user.id)
-    await callback.message.edit_text("✅ Сброшено")
-    await callback.answer()
+    """Сброс сессии"""
+    user_id = callback.from_user.id
+    try:
+        await state_manager.clear_session(user_id)
+        await callback.message.edit_text("✅ Сброшено")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка сброса сессии: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка сброса", show_alert=True)
 
 async def handle_delete_msg(c: CallbackQuery): 
+    """Удаление сообщения"""
     try: 
         await c.message.delete()
-    except: 
-        pass
+    except Exception as e:
+        logger.error(f"Ошибка удаления сообщения: {e}")
 
 async def handle_action_add_more(c: CallbackQuery): 
+    """Добавление продуктов"""
     await c.message.edit_text("✏️ Пишите еще продукты:")
 
 async def handle_back_to_categories(c: CallbackQuery): 
+    """Возврат к категориям"""
     await handle_action_cook(c)
 
 async def handle_repeat_recipe(c: CallbackQuery):
+    """Генерация нового варианта рецепта"""
     user_id = c.from_user.id
     dish_name = await state_manager.get_current_dish(user_id)
     products = await state_manager.get_products(user_id)
@@ -612,16 +644,29 @@ async def handle_repeat_recipe(c: CallbackQuery):
         
         recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
         
-        await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        if recipe_id:
+            await c.message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
+        else:
+            await c.message.answer(recipe, parse_mode="HTML")
         await c.answer("✅ Новый вариант готов!")
     except Exception as e:
         await wait.delete()
         logger.error(f"Repeat recipe error: {e}", exc_info=True)
         await c.answer("❌ Ошибка генерации", show_alert=True)
 
-async def handle_clear_my_history(c: CallbackQuery):
-    await database.clear_user_history(c.from_user.id)
-    await c.answer("✅ История очищена", show_alert=False)
+async def handle_clear_my_history(callback: CallbackQuery):
+    """Очистка истории пользователя"""
+    try:
+        user_id = callback.from_user.id
+        deleted_count = await database.clear_user_history(user_id)
+        
+        if deleted_count:
+            await callback.answer(f"✅ История очищена ({deleted_count} рецептов удалено)", show_alert=False)
+        else:
+            await callback.answer("✅ История и так пуста", show_alert=False)
+    except Exception as e:
+        logger.error(f"Ошибка очистки истории: {e}", exc_info=True)
+        await callback.answer("❌ Ошибка очистки истории", show_alert=True)
 
 # --- АДМИН ОБРАБОТЧИКИ ---
 async def handle_admin_stats(callback: CallbackQuery):

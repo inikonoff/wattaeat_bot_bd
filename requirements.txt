@@ -6,7 +6,3 @@ python-dotenv==1.0.1
 openai>=1.0.0
 groq>=0.9.0
 supabase>=2.0.0
-Pillow>=10.0.0
-numpy>=1.24.0
-pydub>=0.25.1
-python-magic>=0.4.27

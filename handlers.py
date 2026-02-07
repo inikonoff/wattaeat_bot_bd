@@ -16,10 +16,6 @@ from groq_service import groq_service
 from state_manager import state_manager
 from database import db as database
 from admin_service import admin_service
-from storage_service import storage_service
-from image_service import image_service
-from card_generator import recipe_card_generator
-from image_prompt_generator import image_prompt_generator
 from config import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
@@ -80,7 +76,7 @@ def get_complex_lunch_keyboard():
         [InlineKeyboardButton(text="⬅️ Назад к категории", callback_data="back_to_categories")]
     ])
 
-def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> InlineKeyboardMarkup:
+def get_recipe_keyboard(recipe_id: int = None) -> InlineKeyboardMarkup:
     """Клавиатура под рецептом - ОБНОВЛЕННЫЙ ПОРЯДОК"""
     buttons = []
     
@@ -90,15 +86,6 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
             text="❤️ В избранное",
             callback_data=f"fav_add_{recipe_id}"
         )])
-    
-    # УДАЛЕНО: Кнопка "Другой вариант"
-    # УДАЛЕНО: Кнопка генерации промпта
-    
-    # Кнопка создания карточки (ЗАКОММЕНТИРОВАНА по требованию)
-    # buttons.append([InlineKeyboardButton(
-    #     text="📤 Поделиться рецептом",
-    #     callback_data="create_card"
-    # )])
     
     # Кнопка "Вернуться к категориям"
     buttons.append([InlineKeyboardButton(
@@ -123,8 +110,6 @@ def get_recipe_keyboard_favorite(recipe_id: int) -> InlineKeyboardMarkup:
         text="🗑️ Удалить из избранного",
         callback_data=f"fav_delete_{recipe_id}"
     )])
-    
-    # УДАЛЕНО: Промпт для генерации
     
     buttons.append([InlineKeyboardButton(
         text="❌ Закрыть",
@@ -331,10 +316,10 @@ async def handle_action_cook(c: CallbackQuery):
     wait = await c.message.edit_text("📊 Анализирую продукты...")
     
     try:
-        categories_json = await groq_service.analyze_categories(products)
-        available_categories = list(categories_json.keys())
+        categories = await groq_service.analyze_categories(products)
+        available_categories = categories
         
-        await state_manager.set_categories(user_id, categories_json)
+        await state_manager.set_categories(user_id, categories)
         
         text = f"👨‍🍳 Выберите категорию блюда:\n\n📦 Ваши продукты: <b>{products}</b>"
         await wait.edit_text(text, reply_markup=get_categories_keyboard(available_categories), parse_mode="HTML")
@@ -362,8 +347,7 @@ async def handle_category_selection(c: CallbackQuery):
         await state_manager.set_category(user_id, category)
         
         products = await state_manager.get_products(user_id)
-        categories = await state_manager.get_categories(user_id)
-        dishes = categories.get(category, [])
+        dishes = await groq_service.generate_dishes_list(products, category)
         
         await state_manager.set_dishes(user_id, dishes)
         
@@ -384,7 +368,7 @@ async def handle_dish_selection(c: CallbackQuery):
         wait = await c.message.edit_text("👨‍🍳 Создаю комплексный обед...", parse_mode="HTML")
         
         try:
-            recipe = await groq_service.generate_complex_lunch(products)
+            recipe = await groq_service.generate_recipe("Комплексный обед", products)
             await wait.delete()
             
             await state_manager.set_current_dish(user_id, "Комплексный обед")
@@ -443,40 +427,6 @@ async def handle_dish_selection(c: CallbackQuery):
         await wait.delete()
         logger.error(f"Recipe error: {e}", exc_info=True)
         await c.answer("❌ Ошибка генерации", show_alert=True)
-
-async def handle_generate_prompt(callback: CallbackQuery):
-    """Генерация промпта для Midjourney/DALL-E"""
-    user_id = callback.from_user.id
-    dish_name = await state_manager.get_current_dish(user_id)
-    
-    if not dish_name:
-        await callback.answer("❌ Блюдо не найдено", show_alert=True)
-        return
-    
-    wait = await callback.message.answer("🎨 Генерирую промпт для изображения...")
-    
-    try:
-        prompt = await image_prompt_generator.generate_prompt(dish_name)
-        
-        await wait.delete()
-        
-        prompt_text = (
-            f"🎨 <b>Промпт для генерации изображения:</b>\n\n"
-            f"<code>{prompt}</code>\n\n"
-            f"💡 Скопируйте этот промпт и используйте в Midjourney, DALL-E или других генераторах изображений."
-        )
-        
-        await callback.message.answer(prompt_text, reply_markup=get_hide_keyboard(), parse_mode="HTML")
-        await callback.answer("✅ Промпт готов!")
-        
-    except Exception as e:
-        await wait.delete()
-        logger.error(f"Prompt generation error: {e}", exc_info=True)
-        await callback.answer("❌ Ошибка генерации промпта", show_alert=True)
-
-async def handle_create_card(c: CallbackQuery):
-    """Создание карточки рецепта (ОТКЛЮЧЕНО)"""
-    await c.answer("❌ Функция временно отключена", show_alert=True)
 
 async def handle_fav_add(callback: CallbackQuery):
     """Добавление рецепта в избранное"""
@@ -732,8 +682,6 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_action_cook, F.data == "action_cook")
     dp.callback_query.register(handle_category_selection, F.data.startswith("cat_"))
     dp.callback_query.register(handle_dish_selection, F.data.startswith("dish_"))
-    dp.callback_query.register(handle_generate_prompt, F.data == "gen_prompt")
-    dp.callback_query.register(handle_create_card, F.data == "create_card")
     dp.callback_query.register(handle_fav_add, F.data.startswith("fav_add_"))
     dp.callback_query.register(handle_fav_delete, F.data.startswith("fav_delete_"))
     dp.callback_query.register(handle_fav_view, F.data.startswith("fav_") & ~F.data.startswith("fav_add_") & ~F.data.startswith("fav_delete_"))
@@ -742,7 +690,6 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_delete_msg, F.data == "delete_msg")
     dp.callback_query.register(handle_action_add_more, F.data == "action_add_more")
     dp.callback_query.register(handle_back_to_categories, F.data == "back_to_categories")
-    dp.callback_query.register(handle_repeat_recipe, F.data == "repeat_recipe")
     dp.callback_query.register(handle_clear_my_history, F.data == "clear_my_history")
     
     # Админка

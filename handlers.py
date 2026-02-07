@@ -331,7 +331,7 @@ async def handle_action_cook(c: CallbackQuery):
     wait = await c.message.edit_text("📊 Анализирую продукты...")
     
     try:
-        categories_json = await groq_service.get_categories_for_products(products)
+        categories_json = await groq_service.analyze_categories(products)
         available_categories = list(categories_json.keys())
         
         await state_manager.set_categories(user_id, categories_json)

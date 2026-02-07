@@ -23,7 +23,7 @@ ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
 
 # Настройки
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 MAX_HISTORY_MESSAGES = 8
 IMAGE_QUALITY = 85
 IMAGE_MAX_SIZE = 1024  # Чуть меньше для стабильности HF

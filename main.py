@@ -9,9 +9,6 @@ from handlers import register_handlers
 from state_manager import state_manager
 from aiohttp import web
 from database import db
-from storage_service import storage_service
-from groq_service import groq_service
-from card_generator import recipe_card_generator # Импортируем генератор
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
@@ -32,15 +29,11 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    logger.info("🚀 Запуск бота v2.0 (Hugging Face + Fonts Fix)")
+    logger.info("🚀 Запуск бота")
     
-    # 0. Скачиваем шрифты (Критично для карточек!)
-    await recipe_card_generator.ensure_fonts()
-
     # 1. БД и Хранилище
     await db.connect()
     await state_manager.initialize()
-    await storage_service.initialize()
     
     # 2. Веб-сервер
     await start_web_server()

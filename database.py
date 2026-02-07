@@ -1,5 +1,5 @@
 import asyncpg
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import json
 import logging
 import re
@@ -113,13 +113,14 @@ class Database:
             await conn.execute("UPDATE sessions SET products=NULL, state=NULL, categories='[]'::jsonb, generated_dishes='[]'::jsonb, current_dish=NULL, history='[]'::jsonb WHERE user_id=$1", telegram_id)
 
     # --- Recipe Methods ---
-    async def save_recipe(self, telegram_id: int, dish_name: str, recipe_text: str, products_used: str = None, image_url: str = None) -> int:
+    async def save_recipe(self, telegram_id: int, dish_name: str, recipe_text: str, products_used: str = None, image_url: str = None) -> Dict:
+        """Сохраняет рецепт и возвращает его полные данные"""
         async with self.pool.acquire() as conn:
             r = await conn.fetchrow(
-                "INSERT INTO recipes (user_id, dish_name, recipe_text, products_used, image_url) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                "INSERT INTO recipes (user_id, dish_name, recipe_text, products_used, image_url) VALUES ($1, $2, $3, $4, $5) RETURNING *",
                 telegram_id, dish_name, recipe_text, products_used, image_url
             )
-            return r['id']
+            return dict(r)
             
     async def get_user_recipes(self, telegram_id: int, limit: int = 10) -> List[Dict]:
         async with self.pool.acquire() as conn:
@@ -139,33 +140,52 @@ class Database:
             return [dict(r) for r in rows]
             
     async def get_favorite_recipe(self, recipe_id: int) -> Optional[Dict]:
+        """Получает рецепт по ID (без проверки пользователя - для внутреннего использования)"""
         async with self.pool.acquire() as conn:
             r = await conn.fetchrow("SELECT * FROM recipes WHERE id = $1", recipe_id)
             return dict(r) if r else None
 
-    async def add_to_favorites(self, user_id: int, recipe_id: int) -> bool:
-        """Добавляет рецепт в избранное (Алиас для mark_as_favorite, но с проверкой юзера)"""
+    async def get_recipe_by_id(self, user_id: int, recipe_id: int) -> Optional[Dict]:
+        """Получает рецепт пользователя по ID (с проверкой принадлежности)"""
         async with self.pool.acquire() as conn:
-            # Проверяем, принадлежит ли рецепт пользователю (опционально, но безопасно)
-            # В данном случае просто обновляем по ID
-            result = await conn.execute(
-                "UPDATE recipes SET is_favorite = TRUE WHERE id = $1",
-                recipe_id
+            r = await conn.fetchrow("SELECT * FROM recipes WHERE id = $1 AND user_id = $2", recipe_id, user_id)
+            return dict(r) if r else None
+
+    async def is_recipe_favorite(self, user_id: int, recipe_id: int) -> bool:
+        """Проверяет, находится ли рецепт в избранном у пользователя"""
+        async with self.pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM recipes WHERE id = $1 AND user_id = $2 AND is_favorite = TRUE",
+                recipe_id, user_id
             )
+            return count > 0
+
+    async def add_to_favorites(self, user_id: int, recipe_id: int) -> bool:
+        """Добавляет рецепт в избранное (только если рецепт принадлежит пользователю)"""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE recipes SET is_favorite = TRUE WHERE id = $1 AND user_id = $2",
+                recipe_id, user_id
+            )
+            logger.info(f"User {user_id} added recipe {recipe_id} to favorites. Result: {result}")
             return result == "UPDATE 1"
 
-    async def remove_from_favorites(self, recipe_id: int) -> bool:
-        """Удаляет рецепт из избранного (меняет флаг is_favorite на FALSE)"""
+    async def remove_from_favorites(self, user_id: int, recipe_id: int) -> bool:
+        """Удаляет рецепт из избранного (только если рецепт принадлежит пользователю)"""
         async with self.pool.acquire() as conn:
             result = await conn.execute(
-                "UPDATE recipes SET is_favorite = FALSE WHERE id = $1",
-                recipe_id
+                "UPDATE recipes SET is_favorite = FALSE WHERE id = $1 AND user_id = $2",
+                recipe_id, user_id
             )
+            logger.info(f"User {user_id} removed recipe {recipe_id} from favorites. Result: {result}")
             return result == "UPDATE 1"
 
     async def clear_user_history(self, user_id: int):
+        """Очищает историю рецептов пользователя (только не избранные)"""
         async with self.pool.acquire() as conn:
-            await conn.execute("DELETE FROM recipes WHERE user_id = $1 AND is_favorite = FALSE", user_id)
+            deleted_count = await conn.execute("DELETE FROM recipes WHERE user_id = $1 AND is_favorite = FALSE", user_id)
+            logger.info(f"User {user_id} cleared history. Deleted {deleted_count} recipes")
+            return deleted_count
 
     # --- Cache Methods ---
     async def get_cached_image(self, recipe_hash: str) -> Optional[Dict]:
@@ -274,23 +294,24 @@ class Database:
             return [dict(r) for r in rows]
     
     async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
-        """Топ продуктов - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+        """Топ продуктов - ИСПРАВЛЕННАЯ ВЕРСИЯ (без SQL-инъекции)"""
         async with self.pool.acquire() as conn:
-            interval = {
-                'week': '7 days',
-                'month': '30 days',
-                'year': '365 days'
-            }.get(period, '30 days')
+            # Безопасное определение интервала
+            intervals = {
+                'week': 7,
+                'month': 30,
+                'year': 365
+            }
+            days = intervals.get(period, 30)
             
-            # ИСПРАВЛЕННЫЙ ЗАПРОС: разделяем продукты по запятой и пробелу
-            rows = await conn.fetch(f"""
+            rows = await conn.fetch("""
                 SELECT 
                     LOWER(TRIM(ingredient)) as name,
                     COUNT(*) as count
                 FROM (
                     SELECT UNNEST(REGEXP_SPLIT_TO_ARRAY(products_used, ',\\s*')) as ingredient
                     FROM recipes
-                    WHERE created_at >= NOW() - INTERVAL '{interval}'
+                    WHERE created_at >= NOW() - INTERVAL '1 day' * $1
                     AND products_used IS NOT NULL
                     AND TRIM(products_used) != ''
                 ) sub
@@ -300,8 +321,8 @@ class Database:
                 GROUP BY LOWER(TRIM(ingredient))
                 HAVING COUNT(*) >= 1
                 ORDER BY count DESC
-                LIMIT $1
-            """, limit)
+                LIMIT $2
+            """, days, limit)
             return [{'name': r['name'], 'count': r['count']} for r in rows]
     
     async def get_top_dishes(self, limit: int = 5) -> List[Dict]:

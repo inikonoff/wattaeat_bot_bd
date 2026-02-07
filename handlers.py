@@ -262,49 +262,46 @@ async def handle_direct_recipe(message: Message, text: str):
     """Прямой поиск рецепта по названию"""
     user_id = message.from_user.id
     
-    # Очищаем "дай рецепт" и пробелы, сохраняем кавычки пользователя
-    dish_name = text
+    # Очищаем текст от команд
+    dish_name = text.lower().strip()
     
-    # Удаляем команды и фразы, но сохраняем кавычки
-    for phrase in ["дай рецепт", "рецепт", "дай", "покажи рецепт", "напиши рецепт"]:
-        dish_name = dish_name.replace(phrase, "")
+    # Удаляем команды ТОЛЬКО в начале строки
+    commands = [
+        "дай рецепт ",
+        "покажи рецепт ",
+        "напиши рецепт ",
+        "рецепт ",
+    ]
     
-    dish_name = dish_name.strip()
+    for cmd in commands:
+        if dish_name.startswith(cmd):
+            dish_name = dish_name[len(cmd):].strip()
+            break
     
     if len(dish_name) < 2:
         await message.answer("Напишите название блюда, например: <i>Дай рецепт борща</i>", parse_mode="HTML")
         return
     
-    # Сохраняем оригинальный текст для отображения в поиске
-    original_search_text = dish_name
-    
-    # Нормализуем название (убираем лишние знаки препинания, оставляем кавычки если были)
-    dish_name_display = dish_name.strip('"\'')
-    
-    # Простая нормализация: первая буква заглавная, остальные строчные
-    # Но сохраняем название в том виде, в каком оно обычно используется
-    if dish_name_display and dish_name_display[0].islower():
-        dish_name_display = dish_name_display[0].upper() + dish_name_display[1:]
+    # Нормализуем: первая буква заглавная
+    if dish_name and dish_name[0].islower():
+        dish_name = dish_name[0].upper() + dish_name[1:]
     
     # Убираем лишние знаки препинания в конце
-    dish_name_display = dish_name_display.rstrip('.!?,;')
+    dish_name = dish_name.rstrip('.!?,;')
     
-    # ИСПРАВЛЕНИЕ: Формируем сообщение поиска БЕЗ жирного шрифта
-    # Убираем кавычки если они были только в начале и конце
-    clean_text = original_search_text.strip('"\'')
-    search_message = f"Ищу рецепт {clean_text}"
+    # Формируем сообщение поиска
+    search_message = f"Ищу рецепт {dish_name}"
     
-    # Отправляем БЕЗ parse_mode чтобы избежать любого форматирования
     wait = await message.answer(search_message)
     
     try:
         # Генерируем рецепт с нормализованным названием
-        recipe = await groq_service.generate_freestyle_recipe(dish_name_display)
+        recipe = await groq_service.generate_freestyle_recipe(dish_name)
         await wait.delete()
         
-        await state_manager.set_current_dish(user_id, dish_name_display)
+        await state_manager.set_current_dish(user_id, dish_name)
         await state_manager.set_state(user_id, "recipe_sent")
-        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name_display, recipe)
+        recipe_id = await state_manager.save_recipe_to_history(user_id, dish_name, recipe)
         
         await message.answer(recipe, reply_markup=get_recipe_keyboard(recipe_id), parse_mode="HTML")
     except Exception as e:

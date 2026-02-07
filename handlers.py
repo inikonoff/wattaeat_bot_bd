@@ -91,17 +91,8 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
             callback_data=f"fav_add_{recipe_id}"
         )])
     
-    # Кнопка "Другой вариант" - ВТОРАЯ
-    buttons.append([InlineKeyboardButton(
-        text="🔄 Другой вариант", 
-        callback_data="repeat_recipe"
-    )])
-    
-    # Кнопка генерации промпта - ТРЕТЬЯ
-    buttons.append([InlineKeyboardButton(
-        text="🎨 Промпт для Midjourney/DALL-E",
-        callback_data="gen_prompt"
-    )])
+    # УДАЛЕНО: Кнопка "Другой вариант"
+    # УДАЛЕНО: Кнопка генерации промпта
     
     # Кнопка создания карточки (ЗАКОММЕНТИРОВАНА по требованию)
     # buttons.append([InlineKeyboardButton(
@@ -109,13 +100,13 @@ def get_recipe_keyboard(recipe_id: int = None, has_image: bool = False) -> Inlin
     #     callback_data="create_card"
     # )])
     
-    # Кнопка "Вернуться к категориям" - ЧЕТВЕРТАЯ
+    # Кнопка "Вернуться к категориям"
     buttons.append([InlineKeyboardButton(
         text="⬅️ Вернуться к категориям", 
         callback_data="back_to_categories"
     )])
     
-    # Кнопка "Новый набор продуктов" - ПЯТАЯ
+    # Кнопка "Новый набор продуктов"
     buttons.append([InlineKeyboardButton(
         text="🆕 Новый набор продуктов",
         callback_data="restart"
@@ -133,11 +124,7 @@ def get_recipe_keyboard_favorite(recipe_id: int) -> InlineKeyboardMarkup:
         callback_data=f"fav_delete_{recipe_id}"
     )])
     
-    # Промпт для генерации
-    buttons.append([InlineKeyboardButton(
-        text="🎨 Промпт для Midjourney/DALL-E",
-        callback_data="gen_prompt"
-    )])
+    # УДАЛЕНО: Промпт для генерации
     
     buttons.append([InlineKeyboardButton(
         text="❌ Закрыть",

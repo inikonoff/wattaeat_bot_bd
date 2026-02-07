@@ -187,21 +187,6 @@ class Database:
             logger.info(f"User {user_id} cleared history. Deleted {deleted_count} recipes")
             return deleted_count
 
-    # --- Cache Methods ---
-    async def get_cached_image(self, recipe_hash: str) -> Optional[Dict]:
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM image_cache WHERE recipe_hash = $1", recipe_hash)
-            return dict(row) if row else None
-
-    async def save_cached_image(self, dish_name: str, recipe_hash: str, image_url: str, backend: str, file_size: int = 0):
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO image_cache (dish_name, recipe_hash, image_url, storage_backend, file_size) 
-                VALUES ($1, $2, $3, $4, $5) 
-                ON CONFLICT (recipe_hash) DO UPDATE SET image_url=$3, storage_backend=$4""",
-                dish_name, recipe_hash, image_url, backend, file_size
-            )
-
     # --- СТАТИСТИКА ДЛЯ АДМИНКИ ---
     
     async def get_stats(self) -> Dict:

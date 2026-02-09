@@ -187,6 +187,25 @@ class Database:
             logger.info(f"User {user_id} cleared history. Deleted {deleted_count} recipes")
             return deleted_count
 
+    # --- СТАТИСТИКА ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
+    
+    async def get_user_stats(self, user_id: int) -> Dict:
+        """Статистика конкретного пользователя"""
+        async with self.pool.acquire() as conn:
+            total_recipes = await conn.fetchval(
+                "SELECT COUNT(*) FROM recipes WHERE user_id = $1", 
+                user_id
+            )
+            favorites = await conn.fetchval(
+                "SELECT COUNT(*) FROM recipes WHERE user_id = $1 AND is_favorite = TRUE", 
+                user_id
+            )
+            
+            return {
+                'total_recipes': total_recipes,
+                'favorites': favorites
+            }
+    
     # --- СТАТИСТИКА ДЛЯ АДМИНКИ ---
     
     async def get_stats(self) -> Dict:

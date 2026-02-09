@@ -227,6 +227,53 @@ class AdminService:
         except Exception as e:
             logger.error(f"Ошибка получения факта: {e}", exc_info=True)
             return "❌ Ошибка получения данных. Попробуйте позже."
+    
+    @staticmethod
+    async def get_users_list_message(page: int = 1, page_size: int = 20) -> str:
+        """Список всех пользователей с пагинацией"""
+        try:
+            offset = (page - 1) * page_size
+            users = await db.get_all_users(limit=page_size, offset=offset)
+            
+            if not users:
+                return "👥 <b>Список пользователей</b>\n\nПользователей не найдено"
+            
+            text = f"👥 <b>Список пользователей (стр. {page})</b>\n\n"
+            
+            for idx, user in enumerate(users, start=offset + 1):
+                # Формируем имя
+                name_parts = []
+                if user.get('first_name'):
+                    name_parts.append(user['first_name'])
+                if user.get('last_name'):
+                    name_parts.append(user['last_name'])
+                
+                display_name = " ".join(name_parts) if name_parts else "Аноним"
+                
+                # Username
+                username = f"@{user['username']}" if user.get('username') else "—"
+                
+                # ID
+                user_id = user['id']
+                
+                # Статистика
+                recipes = user.get('recipe_count', 0)
+                favorites = user.get('favorites_count', 0)
+                
+                # Дата регистрации
+                created_at = user['created_at'].strftime('%d.%m.%Y') if user.get('created_at') else "—"
+                
+                text += f"{idx}. <b>{display_name}</b>\n"
+                text += f"   🆔 ID: <code>{user_id}</code>\n"
+                text += f"   👤 Username: {username}\n"
+                text += f"   📝 Рецептов: {recipes} (❤️ {favorites})\n"
+                text += f"   📅 Регистрация: {created_at}\n\n"
+            
+            return text
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения списка пользователей: {e}", exc_info=True)
+            return "❌ Ошибка получения данных"
 
 # Глобальный экземпляр
 admin_service = AdminService()

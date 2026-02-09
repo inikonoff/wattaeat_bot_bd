@@ -209,42 +209,68 @@ class Database:
     async def ban_user(self, user_id: int) -> bool:
         """Блокирует пользователя"""
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE users SET is_banned = TRUE WHERE id = $1",
-                user_id
-            )
-            return result == "UPDATE 1"
+            try:
+                result = await conn.execute(
+                    "UPDATE users SET is_banned = TRUE WHERE id = $1",
+                    user_id
+                )
+                return result == "UPDATE 1"
+            except asyncpg.exceptions.UndefinedColumnError:
+                # Если колонки нет, сначала создаем её
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE")
+                # Затем устанавливаем значение
+                result = await conn.execute(
+                    "UPDATE users SET is_banned = TRUE WHERE id = $1",
+                    user_id
+                )
+                return result == "UPDATE 1"
     
     async def unban_user(self, user_id: int) -> bool:
         """Разблокирует пользователя"""
         async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE users SET is_banned = FALSE WHERE id = $1",
-                user_id
-            )
-            return result == "UPDATE 1"
+            try:
+                result = await conn.execute(
+                    "UPDATE users SET is_banned = FALSE WHERE id = $1",
+                    user_id
+                )
+                return result == "UPDATE 1"
+            except asyncpg.exceptions.UndefinedColumnError:
+                # Если колонки нет, сначала создаем её
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE")
+                return False
     
     async def is_user_banned(self, user_id: int) -> bool:
         """Проверяет, заблокирован ли пользователь"""
         async with self.pool.acquire() as conn:
-            is_banned = await conn.fetchval(
-                "SELECT is_banned FROM users WHERE id = $1",
-                user_id
-            )
-            return bool(is_banned)
+            try:
+                is_banned = await conn.fetchval(
+                    "SELECT is_banned FROM users WHERE id = $1",
+                    user_id
+                )
+                return bool(is_banned)
+            except asyncpg.exceptions.UndefinedColumnError:
+                # Если колонки нет, пользователь точно не заблокирован
+                return False
     
     async def get_all_user_ids(self) -> List[int]:
         """Получает список всех ID пользователей (для рассылки)"""
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT id FROM users WHERE is_banned = FALSE")
+            rows = await conn.fetch("SELECT id FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
             return [row['id'] for row in rows]
     
     async def get_user_count_by_status(self) -> Dict:
         """Статистика пользователей по статусам"""
         async with self.pool.acquire() as conn:
             total = await conn.fetchval("SELECT COUNT(*) FROM users")
-            active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = FALSE")
-            banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
+            
+            # Проверяем наличие колонки is_banned
+            try:
+                active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
+                banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
+            except asyncpg.exceptions.UndefinedColumnError:
+                # Если колонки нет, все пользователи активны
+                active = total
+                banned = 0
             
             return {
                 'total': total,
@@ -382,7 +408,7 @@ class Database:
             """, days)
             return [{'date': r['date'].strftime('%d.%m'), 'count': r['count']} for r in rows]
     
-    async def get_category_stats(self) -> List[Dict]:
+     async def get_category_stats(self) -> List[Dict]:
         """Статистика по категориям блюд"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""

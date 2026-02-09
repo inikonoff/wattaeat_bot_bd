@@ -23,10 +23,6 @@ ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()
 GROQ_MODEL = "openai/gpt-oss-120b"
 MAX_HISTORY_MESSAGES = 8
 
-# Лимиты
-DAILY_IMAGE_LIMIT_NORMAL = 5
-DAILY_IMAGE_LIMIT_ADMIN = -1
-
 # Папки
 TEMP_DIR = "temp"
 os.makedirs(TEMP_DIR, exist_ok=True)

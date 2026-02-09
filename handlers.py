@@ -137,6 +137,7 @@ def get_stats_keyboard(user_id: int, history_recipes: list):
 def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
         [InlineKeyboardButton(text="🏆 Топ поваров", callback_data="admin_top_cooks")],
         [InlineKeyboardButton(text="🥕 Топ продуктов", callback_data="admin_top_ingredients")],
         [InlineKeyboardButton(text="🍽️ Топ блюд", callback_data="admin_top_dishes")],
@@ -669,6 +670,16 @@ async def handle_admin_random_fact(callback: CallbackQuery):
         logger.error(f"Admin random fact error: {e}")
         await callback.answer("❌ Ошибка", show_alert=True)
 
+async def handle_admin_users(callback: CallbackQuery):
+    """Показывает список пользователей"""
+    try:
+        text = await admin_service.get_users_list_message(page=1, page_size=20)
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Admin users list error: {e}")
+        await callback.answer("❌ Ошибка", show_alert=True)
+
 # --- REGISTER ---
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_start, Command("start"))
@@ -694,6 +705,7 @@ def register_handlers(dp: Dispatcher):
     
     # Админка
     dp.callback_query.register(handle_admin_stats, F.data == "admin_stats")
+    dp.callback_query.register(handle_admin_users, F.data == "admin_users")
     dp.callback_query.register(handle_admin_top_cooks, F.data == "admin_top_cooks")
     dp.callback_query.register(handle_admin_top_ingredients, F.data == "admin_top_ingredients")
     dp.callback_query.register(handle_admin_top_dishes, F.data == "admin_top_dishes")

@@ -187,6 +187,28 @@ class Database:
             logger.info(f"User {user_id} cleared history. Deleted {deleted_count} recipes")
             return deleted_count
 
+    # --- АДМИНСКИЕ МЕТОДЫ ---
+    
+    async def get_all_users(self, limit: int = 50, offset: int = 0) -> List[Dict]:
+        """Получает список всех пользователей с их статистикой"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    u.id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.created_at,
+                    COUNT(r.id) as recipe_count,
+                    COUNT(CASE WHEN r.is_favorite = TRUE THEN 1 END) as favorites_count
+                FROM users u
+                LEFT JOIN recipes r ON u.id = r.user_id
+                GROUP BY u.id, u.username, u.first_name, u.last_name, u.created_at
+                ORDER BY u.created_at DESC
+                LIMIT $1 OFFSET $2
+            """, limit, offset)
+            return [dict(r) for r in rows]
+    
     # --- СТАТИСТИКА ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
     
     async def get_user_stats(self, user_id: int) -> Dict:

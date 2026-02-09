@@ -16,7 +16,8 @@ class StateManagerDB:
             'current_dish': {},
             'history': {},
             'last_recipe_id': {},
-            'last_access': {}  # NEW: для очистки старых сессий
+            'last_access': {},
+            'broadcast_text': {}  # Новое: временное хранение текста рассылки
         }
         self.db_connected = False
         self.MAX_CACHE_AGE = 3600  # 1 час
@@ -69,11 +70,12 @@ class StateManagerDB:
         self._cache['dishes'][user_id] = []
         self._cache['current_dish'][user_id] = ''
         self._cache['history'][user_id] = []
+        self._cache['broadcast_text'][user_id] = ''
 
     async def _clean_old_cache(self):
         """Очищает старые записи из кэша"""
         now = datetime.now()
-        for key in ['products', 'states', 'categories', 'dishes', 'current_dish', 'history', 'last_recipe_id']:
+        for key in ['products', 'states', 'categories', 'dishes', 'current_dish', 'history', 'last_recipe_id', 'broadcast_text']:
             for user_id in list(self._cache[key].keys()):
                 last_access = self._cache['last_access'].get(user_id)
                 if last_access and (now - last_access).seconds > self.MAX_CACHE_AGE:
@@ -225,6 +227,32 @@ class StateManagerDB:
         except Exception as e:
             logger.error(f"Error getting last bot message for {user_id}: {e}")
             return None
+
+    # --- НОВЫЕ МЕТОДЫ ДЛЯ РАССЫЛКИ ---
+    
+    async def set_broadcast_text(self, user_id: int, text: str):
+        """Сохраняет текст рассылки во временное хранилище"""
+        try:
+            self._cache['broadcast_text'][user_id] = text
+            self._cache['last_access'][user_id] = datetime.now()
+        except Exception as e:
+            logger.error(f"Error setting broadcast text for {user_id}: {e}")
+
+    async def get_broadcast_text(self, user_id: int) -> Optional[str]:
+        """Получает текст рассылки из временного хранилища"""
+        try:
+            return self._cache['broadcast_text'].get(user_id)
+        except Exception as e:
+            logger.error(f"Error getting broadcast text for {user_id}: {e}")
+            return None
+
+    async def clear_broadcast_text(self, user_id: int):
+        """Очищает текст рассылки"""
+        try:
+            if user_id in self._cache['broadcast_text']:
+                del self._cache['broadcast_text'][user_id]
+        except Exception as e:
+            logger.error(f"Error clearing broadcast text for {user_id}: {e}")
 
     async def save_recipe_to_history(self, user_id: int, dish_name: str, recipe_text: str, image_url: Optional[str] = None) -> Optional[int]:
         """Сохраняет рецепт в историю и возвращает ID рецепта"""

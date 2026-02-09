@@ -174,17 +174,17 @@ async def cmd_start(message: Message):
         logger.error(f"Start error: {e}", exc_info=True)
 
 async def cmd_author(message: Message):
+    """ИСПРАВЛЕНО: Изменено на 'Связь с автором бота' и контакт @inikonoff"""
     text = (
-        "👨‍💻 <b>Разработчик бота:</b>\n\n"
-        "Иван Никифоров\n"
-        "Telegram: @ivi4an\n\n"
-        "Спасибо что пользуетесь!"
+        "👨‍💻 <b>Связь с автором бота:</b>\n\n"
+        "@inikonoff"
     )
     await message.answer(text, parse_mode="HTML")
 
 async def cmd_stats(message: Message):
     user_id = message.from_user.id
     try:
+        # ИСПРАВЛЕНО: Теперь используем существующий метод get_user_stats
         stats = await database.get_user_stats(user_id)
         history = await database.get_user_recipes(user_id)
         

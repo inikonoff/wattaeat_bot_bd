@@ -408,7 +408,7 @@ class Database:
             """, days)
             return [{'date': r['date'].strftime('%d.%m'), 'count': r['count']} for r in rows]
     
-     async def get_category_stats(self) -> List[Dict]:
+    async def get_category_stats(self) -> List[Dict]:
         """Статистика по категориям блюд"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""

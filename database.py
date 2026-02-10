@@ -265,10 +265,24 @@ class Database:
             
             # Проверяем наличие колонки is_banned
             try:
-                active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
-                banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
-            except asyncpg.exceptions.UndefinedColumnError:
-                # Если колонки нет, все пользователи активны
+                # Сначала проверяем существование колонки
+                column_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_name = 'users' AND column_name = 'is_banned'
+                    )
+                """)
+                
+                if column_exists:
+                    active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
+                    banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
+                else:
+                    # Если колонки нет, все пользователи активны
+                    active = total
+                    banned = 0
+                    
+            except Exception as e:
+                logger.warning(f"Ошибка проверки колонки is_banned: {e}")
                 active = total
                 banned = 0
             
@@ -446,7 +460,7 @@ class Database:
             return [dict(r) for r in rows]
     
     async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
-        """Топ продуктов - ИСПРАВЛЕННАЯ ВЕРСИЯ (без SQL-инъекции)"""
+        """Топ продуктов - УПРОЩЕННАЯ И БЕЗОПАСНАЯ ВЕРСИЯ"""
         async with self.pool.acquire() as conn:
             # Безопасное определение интервала
             intervals = {
@@ -456,26 +470,37 @@ class Database:
             }
             days = intervals.get(period, 30)
             
-            rows = await conn.fetch("""
-                SELECT 
-                    LOWER(TRIM(ingredient)) as name,
-                    COUNT(*) as count
-                FROM (
-                    SELECT UNNEST(REGEXP_SPLIT_TO_ARRAY(products_used, ',\\s*')) as ingredient
+            # Простой запрос без сложных регулярных выражений
+            try:
+                rows = await conn.fetch("""
+                    SELECT 
+                        products_used
                     FROM recipes
                     WHERE created_at >= NOW() - INTERVAL '1 day' * $1
                     AND products_used IS NOT NULL
                     AND TRIM(products_used) != ''
-                ) sub
-                WHERE ingredient IS NOT NULL 
-                AND TRIM(ingredient) != ''
-                AND LENGTH(TRIM(ingredient)) > 1
-                GROUP BY LOWER(TRIM(ingredient))
-                HAVING COUNT(*) >= 1
-                ORDER BY count DESC
-                LIMIT $2
-            """, days, limit)
-            return [{'name': r['name'], 'count': r['count']} for r in rows]
+                    LIMIT 1000
+                """, days)
+                
+                # Собираем ингредиенты вручную
+                ingredient_counter = {}
+                for row in rows:
+                    products = row['products_used']
+                    if products:
+                        # Простое разделение по запятым
+                        ingredients = [ing.strip().lower() for ing in products.split(',') if ing.strip()]
+                        for ingredient in ingredients:
+                            if len(ingredient) > 1:  # Игнорируем слишком короткие
+                                ingredient_counter[ingredient] = ingredient_counter.get(ingredient, 0) + 1
+                
+                # Сортируем и берем топ
+                sorted_items = sorted(ingredient_counter.items(), key=lambda x: x[1], reverse=True)[:limit]
+                
+                return [{'name': name, 'count': count} for name, count in sorted_items]
+                
+            except Exception as e:
+                logger.error(f"Ошибка получения топ ингредиентов: {e}")
+                return []
     
     async def get_top_dishes(self, limit: int = 5) -> List[Dict]:
         """Топ блюд"""

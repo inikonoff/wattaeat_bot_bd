@@ -1,5 +1,3 @@
---- START OF FILE handlers.py ---
-
 import os
 import io
 import logging

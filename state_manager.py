@@ -1,5 +1,3 @@
---- START OF FILE state_manager.py ---
-
 import logging
 import json
 from typing import Dict, List, Optional, Any

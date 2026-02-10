@@ -1,3 +1,5 @@
+--- START OF FILE handlers.py ---
+
 import os
 import io
 import logging
@@ -31,7 +33,6 @@ def normalize_ingredients(text: str) -> str:
     return text
 
 def extract_dish_name(text: str) -> str:
-    # Упрощаем, так как теперь есть классификатор
     text = text.lower()
     remove = ['рецепт', 'приготовь', 'как сделать', 'хочу', 'дай', 'мне', 'пожалуйста']
     for word in remove:
@@ -94,6 +95,10 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")],
+        [InlineKeyboardButton(text="🏆 Топ поваров", callback_data="admin_top_cooks")],
+        [InlineKeyboardButton(text="🥕 Топ продуктов", callback_data="admin_top_ingredients")],
+        [InlineKeyboardButton(text="🍽️ Топ блюд", callback_data="admin_top_dishes")],
+        [InlineKeyboardButton(text="🎲 Факт", callback_data="admin_random_fact")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="delete_msg")]
     ])
 
@@ -350,7 +355,34 @@ async def handle_clear_my_history(c: CallbackQuery):
     await database.clear_user_history(c.from_user.id)
     await c.answer("История очищена")
 
-# Админские хендлеры
+# --- ADMIN HANDLERS (Реализация) ---
+
+async def handle_admin_stats(c: CallbackQuery):
+    text = await admin_service.get_stats_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+async def handle_admin_users(c: CallbackQuery):
+    text = await admin_service.get_users_list_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+async def handle_admin_top_cooks(c: CallbackQuery):
+    text = await admin_service.get_top_cooks_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+async def handle_admin_top_ingredients(c: CallbackQuery):
+    text = await admin_service.get_top_ingredients_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+async def handle_admin_top_dishes(c: CallbackQuery):
+    text = await admin_service.get_top_dishes_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+async def handle_admin_random_fact(c: CallbackQuery):
+    text = await admin_service.get_random_fact_message()
+    await c.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+
+# --- REGISTER ---
+
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_admin, Command("admin"))
@@ -377,7 +409,9 @@ def register_handlers(dp: Dispatcher):
     dp.callback_query.register(handle_clear_my_history, F.data == "clear_my_history")
     
     # Админские
-    from handlers import handle_admin_stats # Импорт существующих
-    from handlers import handle_admin_users
     dp.callback_query.register(handle_admin_stats, F.data == "admin_stats")
     dp.callback_query.register(handle_admin_users, F.data == "admin_users")
+    dp.callback_query.register(handle_admin_top_cooks, F.data == "admin_top_cooks")
+    dp.callback_query.register(handle_admin_top_ingredients, F.data == "admin_top_ingredients")
+    dp.callback_query.register(handle_admin_top_dishes, F.data == "admin_top_dishes")
+    dp.callback_query.register(handle_admin_random_fact, F.data == "admin_random_fact")

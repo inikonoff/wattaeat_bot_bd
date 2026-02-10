@@ -1,4 +1,5 @@
 import logging
+import html
 from typing import List, Dict
 from database import db
 
@@ -395,7 +396,9 @@ class AdminService:
                 if user.get('last_name'):
                     name_parts.append(user['last_name'])
                 
-                display_name = " ".join(name_parts) if name_parts else "Аноним"
+                raw_name = " ".join(name_parts) if name_parts else "Аноним"
+                # ЭКРАНИРОВАНИЕ HTML ЧТОБЫ НЕ ПАДАЛО
+                display_name = html.escape(raw_name)
                 
                 # Username
                 username = f"@{user['username']}" if user.get('username') else "—"

@@ -191,6 +191,4 @@ class StateManagerRedis:
         except Exception as e:
             logger.error(f"Error clearing session: {e}")
 
-    # Метод periodic_cleanup больше не нужен, так как Redis сам удаляет ключи по TTL (ex=86400)
-
 state_manager = StateManagerRedis()

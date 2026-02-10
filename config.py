@@ -24,7 +24,7 @@ ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()
 
 # Настройки моделей Groq
 GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"
-GROQ_MODEL_AUDIO = "whisper-large-v3-turbo"  # Быстрая и точная модель
+GROQ_MODEL_AUDIO = "whisper-large-v3-turbo"
 
 # Папки
 TEMP_DIR = "temp"

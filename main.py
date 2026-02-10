@@ -9,7 +9,6 @@ from state_manager import state_manager
 from aiohttp import web
 from database import db
 
-# Настраиваем логирование в файл
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -38,11 +37,10 @@ async def start_web_server():
 async def main():
     logger.info("🚀 Запуск бота")
     
-    # 1. БД и Хранилище
-    await db.connect()
+    # 1. Инициализация Redis и БД
     await state_manager.initialize()
     
-    # 2. Веб-сервер
+    # 2. Веб-сервер (для Render/Heroku)
     await start_web_server()
     
     # 3. Бот
@@ -52,7 +50,7 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
-        await db.close()
+        await state_manager.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())

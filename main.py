@@ -1,3 +1,5 @@
+--- START OF FILE main.py ---
+
 import asyncio
 import os
 import logging
@@ -34,16 +36,25 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+async def run_periodic_cleanup():
+    """Фоновая задача для очистки старого кэша из памяти"""
+    while True:
+        await asyncio.sleep(3600)  # Запускаем раз в час
+        await state_manager.periodic_cleanup()
+
 async def main():
     logger.info("🚀 Запуск бота")
     
-    # 1. Инициализация Redis и БД
+    # 1. Инициализация
     await state_manager.initialize()
     
-    # 2. Веб-сервер (для Render/Heroku)
+    # 2. Запуск очистки памяти (важно без Redis!)
+    asyncio.create_task(run_periodic_cleanup())
+    
+    # 3. Веб-сервер
     await start_web_server()
     
-    # 3. Бот
+    # 4. Бот
     register_handlers(dp)
     await bot.delete_webhook(drop_pending_updates=True)
     

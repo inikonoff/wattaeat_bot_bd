@@ -6,16 +6,23 @@ load_dotenv()
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Groq
-GROQ_API_KEYS = os.getenv("GROQ_API_KEYS", "").split(",")
-GROQ_API_KEYS = [key.strip() for key in GROQ_API_KEYS if key.strip()]
+# Groq (Считываем список ключей)
+# Если ключей несколько, они должны быть разделены запятой в переменной окружения
+_keys_str = os.getenv("GROQ_API_KEYS", "")
+GROQ_API_KEYS = [key.strip() for key in _keys_str.split(",") if key.strip()]
+
+# Fallback: если список пуст, попробуем найти одиночный ключ (на всякий случай)
+if not GROQ_API_KEYS:
+    single_key = os.getenv("GROQ_API_KEY")
+    if single_key:
+        GROQ_API_KEYS = [single_key]
 
 # Supabase / Postgres
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Redis
+# Redis (Если переменной нет, используем localhost)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # Админы

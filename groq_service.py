@@ -1,5 +1,3 @@
---- START OF FILE groq_service.py ---
-
 import os
 import logging
 import json

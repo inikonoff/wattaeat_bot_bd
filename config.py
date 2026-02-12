@@ -20,9 +20,7 @@ ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 ADMIN_IDS = [int(admin_id.strip()) for admin_id in ADMIN_IDS if admin_id.strip()]
 
 # Настройки
-GROQ_MODEL = "llama-3.3-70b-versatile"  # Основная модель для текста
-GROQ_MODEL_TEXT = "llama-3.3-70b-versatile"  # Явно для текстовых задач
-GROQ_MODEL_AUDIO = "whisper-large-v3-turbo"  # Для транскрипции
+GROQ_MODEL = "openai/gpt-oss-120b"
 MAX_HISTORY_MESSAGES = 8
 
 # Лимиты

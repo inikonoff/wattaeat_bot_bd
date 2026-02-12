@@ -1,393 +1,625 @@
-import os
-import logging
 import json
-import asyncio
 import re
-import random
-from typing import List, Dict, Optional, Tuple
-from groq import AsyncGroq
+import logging
+import asyncio
+from typing import Dict, List, Optional
+from openai import AsyncOpenAI
+
 from config import GROQ_API_KEYS, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
 class GroqService:
-    """
-    Ultimate Groq Service:
-    - Ротация ключей
-    - Whisper V3 Turbo
-    - Продвинутый Prompt Engineering (Роли, Правила, Вкусы)
-    - Умное форматирование (Markdown -> Telegram HTML)
-    - Валидация ингредиентов (Self-Correction)
-    """
-
-    # --- КОНСТАНТЫ И ПРАВИЛА (МОЗГИ) ---
+    """Сервис для работы с Groq API (LLM + Whisper 3 Turbo)"""
     
-    FLAVOR_RULES = """❗️ ПРАВИЛА ВКУСА:
+    # Правила сочетаемости
+    FLAVOR_RULES = """❗️ ПРАВИЛА СОЧЕТАЕМОСТИ:
 🎭 КОНТРАСТЫ: Жирное + Кислое, Сладкое + Солёное, Мягкое + Хрустящее.
-✨ УСИЛЕНИЕ: Помидор + Базилик, Рыба + Лимон, Тыква + Корица.
-👑 ГЛАВНЫЙ ГЕРОЙ: В блюде должен быть один основной вкус."""
+✨ УСИЛЕНИЕ: Помидор + Базилик, Рыба + Укроп + Лимон, Тыква + Корица, Картофель + Лук + Укроп
+👑 ОДИН ГЛАВНЫЙ ИНГРЕДИЕНТ: В каждом блюде один "король".
+❌ ТАБУ: Рыба + Молочные продукты (в горячем), два сильных мяса в одной композиции."""
 
+    # Словарь для определения языка
     LANGUAGE_KEYWORDS = {
-        'german': ['kartoffel', 'wurst', 'kraut', 'bier', 'schnitzel'],
-        'italian': ['pasta', 'pomodoro', 'formaggio', 'pizza', 'risotto'],
-        'french': ['fromage', 'vin', 'baguette', 'creme'],
-        'spanish': ['paella', 'chorizo', 'tortilla'],
-        'asian': ['soy', 'rice', 'noodle', 'ginger', 'wasabi']
+        'german': ['kartoffel', 'zwiebel', 'karotte', 'tomate', 'gurke', 'käse', 'fleisch', 'wurst', 'brötchen'],
+        'english': ['potato', 'onion', 'carrot', 'tomato', 'cucumber', 'cheese', 'meat', 'bread', 'butter'],
+        'french': ['pomme de terre', 'oignon', 'carotte', 'tomate', 'concombre', 'fromage', 'viande', 'pain'],
+        'spanish': ['patata', 'cebolla', 'zanahoria', 'tomate', 'pepino', 'queso', 'carne', 'pan'],
+        'italian': ['patata', 'cipolla', 'carota', 'pomodoro', 'cetriolo', 'formaggio', 'carne', 'pane']
     }
-
+    
+    # Карта национальных кухонь
+    NATIONAL_CUISINES = {
+        'german': 'Немецкая кухня (bratwurst, sauerkraut, schnitzel, kartoffelsalat)',
+        'english': 'Английская кухня (roast beef, fish and chips, shepherd\'s pie)',
+        'french': 'Французская кухня (ratatouille, coq au vin, quiche lorraine)',
+        'spanish': 'Испанская кухня (paella, gazpacho, tortilla española)',
+        'italian': 'Итальянская кухня (pasta, pizza, risotto, tiramisu)'
+    }
+    
+    # Критические правила валидации рецептов
     RECIPE_VALIDATION_RULES = """
-🚫 КРИТИЧЕСКИЕ ЗАПРЕТЫ:
-1. НЕ используй ингредиенты, которых нет в списке (кроме соли, воды, масла, перца).
-2. Если нет муки/теста — ЗАПРЕЩЕНА выпечка. Предлагай салаты, супы или жарку.
-3. Если нет духовки — предлагай готовку на плите.
+🚫 КРИТИЧЕСКИЕ ПРАВИЛА ГЕНЕРАЦИИ РЕЦЕПТОВ:
+
+1. ИНГРЕДИЕНТЫ:
+   - Используй ТОЛЬКО ингредиенты из списка продуктов пользователя
+   - НЕ добавляй муку, тесто, яйца, молоко, если их нет в списке
+   - Можно использовать БАЗУ: соль, сахар, вода, растительное масло, специи (перец, паприка)
+
+2. ТЕХНОЛОГИИ:
+   - Если нет муки/теста - НЕ предлагай выпечку
+   - Если нет духовки - предлагай варку, жарку на сковороде или холодные блюда
+   - Если нет специальной техники - используй простые методы (нож, ложка, вилка, сковорода)
+
+3. АЛЬТЕРНАТИВЫ:
+   - Нет теста? → Сделай салат, холодную закуску, десерт без выпечки
+   - Нет духовки? → Жарь на сковороде, вари, туши
+   - Нет специальных ингредиентов? → Используй аналоги из списка
+
+4. ЧЕСТНОСТЬ:
+   - Если блюдо невозможно приготовить с данными продуктами - скажи об этом честно
+   - Предложи альтернативное блюдо с теми же продуктами
+   - Не выдумывай недостающие ингредиенты
 """
 
     def __init__(self):
+        self.clients = []
+        self.current_client_index = 0
+        self._init_clients()
+    
+    def _init_clients(self):
+        """Инициализация клиентов Groq"""
         if not GROQ_API_KEYS:
-            logger.error("❌ GROQ_API_KEYS пуст!")
-            raise ValueError("GROQ_API_KEYS не найдены")
+            logger.warning("GROQ_API_KEYS не настроены!")
+            return
         
-        self.api_keys = GROQ_API_KEYS
-        logger.info(f"✅ GroqService инициализирован. Ключей: {len(self.api_keys)}")
+        for key in GROQ_API_KEYS:
+            try:
+                client = AsyncOpenAI(
+                    api_key=key,
+                    base_url="https://api.groq.com/openai/v1",
+                    timeout=30.0,
+                )
+                self.clients.append(client)
+                logger.info(f"✅ Groq client: {key[:8]}...")
+            except Exception as e:
+                logger.error(f"❌ Error client {key[:8]}: {e}")
         
-        # Модели
-        self.model_text = GROQ_MODEL  # Используем основную модель из config
-        self.model_audio = "whisper-large-v3-turbo"  # Whisper для аудио
-        
-        self.max_tokens_map = {
-            "analyze_categories": 500,
-            "generate_dishes": 1000,
-            "generate_recipe": 2800,  # Увеличено для детальных рецептов
-            "freestyle_recipe": 2800,
-            "comparison": 1500,
-            "cooking_advice": 1500,
-            "nutrition": 1500,
-            "general_cooking": 1500,
-            "transcribe": 1000,
-            "validate_recipe": 1000,
-            "regenerate_recipe": 2800,
-            "classify": 100
-        }
-
+        logger.info(f"✅ Total Groq clients: {len(self.clients)}")
+    
     def _get_client(self):
-        """Ротация ключей"""
-        key = random.choice(self.api_keys)
-        return AsyncGroq(api_key=key)
-
-    def _sanitize_input(self, text: str, max_length: int = 500) -> str:
-        if not text: return ""
-        text = text[:max_length]
-        text = text.replace('"""', "'").replace("'''", "'").replace('`', "'")
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        return text.strip()
-
-    def _clean_html_for_telegram(self, text: str) -> str:
-        """Строгая очистка с правильным порядком обработки"""
-        if not text: 
-            return ""
+        """Получаем следующего клиента по кругу"""
+        if not self.clients:
+            return None
+        client = self.clients[self.current_client_index]
+        self.current_client_index = (self.current_client_index + 1) % len(self.clients)
+        return client
+    
+    async def _make_groq_request(self, func, *args, **kwargs):
+        """Делаем запрос с перебором ключей при ошибках"""
+        if not self.clients:
+            raise Exception("No Groq clients available")
         
-        # ШАГ 1: Убираем ВСЕ Markdown-символы (до обработки HTML)
-        # Markdown заголовки
-        text = re.sub(r'#{1,6}\s+(.*?)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-        # Markdown bold/italic (порядок важен!)
-        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)  # жирный+курсив
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-        text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
-        # Остатки одиночных звёздочек/решёток
-        text = text.replace('**', '').replace('##', '').replace('###', '').replace('####', '')
-        
-        # ШАГ 2: Markdown списки -> эмодзи
-        text = re.sub(r'^\s*[\-\*\+]\s+(.+)$', r'🔸 \1', text, flags=re.MULTILINE)
-        text = re.sub(r'^\s*\d+\.\s+(.+)$', r'🔸 \1', text, flags=re.MULTILINE)
-        
-        # ШАГ 3: HTML-теги -> Telegram-совместимые
-        # Заголовки
-        text = re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'<b>\1</b>\n', text, flags=re.IGNORECASE)
-        # Списки
-        text = re.sub(r'<ul[^>]*>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'</ul>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'<ol[^>]*>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'</ol>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'<li[^>]*>', '🔸 ', text, flags=re.IGNORECASE)
-        text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
-        # Параграфы
-        text = re.sub(r'<p[^>]*>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-        # Div, span и прочие
-        text = re.sub(r'<div[^>]*>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'<span[^>]*>', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'</span>', '', text, flags=re.IGNORECASE)
-        
-        # ШАГ 4: Нормализуем пробелы и переносы
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = re.sub(r' {2,}', ' ', text)
-        
-        # ШАГ 5: Финальная валидация - удаляем недопустимые теги
-        # Telegram поддерживает: b, i, u, s, code, pre, a
-        # Удаляем все остальные HTML теги
-        text = re.sub(r'<(?!/?)(?!b|i|u|s|code|pre|a\s)[^>]+>', '', text, flags=re.IGNORECASE)
-        
-        return text.strip()
-
-    async def _send_groq_request(self, system_prompt: str, user_text: str, 
-                                task_type: str = "general", temperature: float = 0.7, 
-                                max_tokens: int = None) -> str:
-        try:
+        errors = []
+        for _ in range(len(self.clients) * 2):
             client = self._get_client()
-            if max_tokens is None:
-                max_tokens = self.max_tokens_map.get(task_type, 1000)
-            
-            response = await client.chat.completions.create(
-                model=self.model_text,  # Используем self.model_text
+            if not client:
+                break
+            try:
+                return await func(client, *args, **kwargs)
+            except Exception as e:
+                errors.append(str(e))
+                logger.warning(f"Request error: {e}")
+                await asyncio.sleep(0.5)
+        
+        raise Exception(f"All clients failed: {'; '.join(errors[:3])}")
+    
+    async def _send_groq_request(
+        self, 
+        system_prompt: str, 
+        user_text: str, 
+        task_type: str = "generation", 
+        temperature: float = 0.5,
+        max_tokens: int = 2000
+    ):
+        """Отправка запроса к LLM"""
+        async def req(client):
+            resp = await client.chat.completions.create(
+                model=GROQ_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text}
                 ],
                 temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=0.9
+                max_tokens=max_tokens
             )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Ошибка Groq API ({task_type}): {e}", exc_info=True)
-            raise
-
-    # --- ЯЗЫКОВЫЕ ФУНКЦИИ ---
-    def detect_language_context(self, products: str) -> str:
-        """Определяет кухню по продуктам"""
-        products_lower = products.lower()
-        for lang, keywords in self.LANGUAGE_KEYWORDS.items():
-            if any(k in products_lower for k in keywords):
-                return f"🌍 КОНТЕКСТ: Обнаружены продукты {lang.upper()} кухни. Предложи традиционное блюдо этого региона."
-        return ""
-
-    # --- WHISPER ---
-    async def transcribe_voice(self, audio_data: bytes) -> Optional[str]:
-        try:
-            client = self._get_client()
-            transcription = await client.audio.transcriptions.create(
-                file=("voice_message.ogg", audio_data),
-                model=self.model_audio,  # Используем self.model_audio
-                response_format="text",
-                language="ru"
-            )
-            return transcription
-        except Exception as e:
-            logger.error(f"Ошибка транскрипции: {e}")
-            return None
-
-    # --- CLASSIFY ---
-    async def classify_intent(self, text: str) -> str:
-        safe_text = self._sanitize_input(text, 200)
-        system_prompt = "Ты классификатор. Определи интент: ingredients, recipe, comparison, advice, nutrition, general. Верни 1 слово."
-        try:
-            response = await self._send_groq_request(system_prompt, f"Запрос: {safe_text}", "classify", 0.1, 10)
-            intent = re.sub(r'[^a-z]', '', response.strip().lower())
-            if intent in ["ingredients", "recipe", "comparison", "advice", "nutrition", "general"]: return intent
-            return "general"
-        except: return "general"
-
-    # --- FALLBACKS ---
-    def _fallback_categories(self, products: str) -> List[str]:
-        return ["main", "snack"]
-
-    def _fallback_dishes(self, category: str, products: str) -> List[Dict[str, str]]:
-        return [{"name": "Блюдо из продуктов", "description": "Вкусный вариант"}]
-
-    def _fallback_recipe(self, dish_name: str, products: str) -> str:
-        return f"<b>🍽️ {dish_name}</b>\n\nНе удалось сгенерировать рецепт. Попробуйте позже."
-
-    # --- GENERATION ---
-    async def analyze_categories(self, products: str) -> List[str]:
-        safe_products = self._sanitize_input(products, 300)
-        system_prompt = 'Ты шеф-повар. Проанализируй список продуктов и верни ТОЛЬКО JSON массив категорий из следующих: ["breakfast", "soup", "main", "salad", "snack", "dessert", "drink", "mix", "sauce"]. Никакого текста кроме JSON массива!'
+            return resp.choices[0].message.content.strip()
         
-        user_prompt = f"Продукты: {safe_products}\n\nВерни JSON массив категорий блюд, которые можно приготовить из этих продуктов."
-        
-        try:
-            response = await self._send_groq_request(system_prompt, user_prompt, "analyze_categories", 0.3, 500)
-            logger.info(f"Raw categories response: {response}")
-            
-            # Ищем JSON массив в ответе
-            json_match = re.search(r'\[.*?\]', response, re.DOTALL)
-            if json_match:
-                categories = json.loads(json_match.group())
-                logger.info(f"Parsed categories: {categories}")
-                return categories[:4]
-            
-            logger.warning(f"No JSON found in response, using fallback")
-            return self._fallback_categories(safe_products)
-        except Exception as e:
-            logger.error(f"Error in analyze_categories: {e}", exc_info=True)
-            return self._fallback_categories(safe_products)
-
-    async def generate_dishes_list(self, products: str, category: str) -> List[Dict[str, str]]:
-        safe_products = self._sanitize_input(products, 300)
-        system_prompt = f"Ты шеф. Предложи 3-5 блюд категории '{category}'. Верни JSON массив объектов с полями 'name' и 'description'."
-        try:
-            response = await self._send_groq_request(system_prompt, f"Продукты: {safe_products}", "generate_dishes", 0.7)
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match: return json.loads(json_match.group())[:5]
-            return self._fallback_dishes(category, safe_products)
-        except: return self._fallback_dishes(category, safe_products)
-
-    async def generate_recipe(self, dish_name: str, products: str) -> str:
-        safe_dish = self._sanitize_input(dish_name, 100)
-        safe_products = self._sanitize_input(products, 300)
-        
-        # Умный контекст
-        lang_context = self.detect_language_context(safe_products)
-        
-        # МОЩНЫЙ ПРОМПТ: КРАСОТА + МОЗГИ
-        system_prompt = f"""Ты Бренд-шеф и Нутрициолог. Напиши идеальный рецепт.
-
-{self.RECIPE_VALIDATION_RULES}
-{self.FLAVOR_RULES}
-{lang_context}
-
-ФОРМАТ ВЫВОДА (Telegram HTML):
-1. <b>Название блюда</b> (без лишних слов)
-2. 📦 <b>Ингредиенты:</b>
-   🔸 Ингредиент 1
-   🔸 Ингредиент 2
-3. 📊 <b>Пищевая ценность на 1 порцию:</b>
-   🥚 Белки: ... г
-   🥑 Жиры: ... г
-   🌾 Углеводы: ... г
-   ⚡ Энерг. ценность: ... ккал
-4. ⏱ <b>Время:</b> ... мин
-5. 🪦 <b>Сложность:</b> ...
-6. 👥 <b>Порции:</b> ...
-7. 👨‍🍳 <b>Приготовление:</b>
-   1. Шаг 1 (выделяй <b>жирным</b> действия)
-   2. Шаг 2
-8. 💡 <b>Секрет шефа:</b> (совет по улучшению вкуса)
-
-Используй только HTML теги <b>, <i>, <u>. Не используй Markdown."""
-
-        user_prompt = f"Блюдо: {safe_dish}. Продукты: {safe_products}"
-        
-        try:
-            response = await self._send_groq_request(system_prompt, user_prompt, "generate_recipe", 0.5, 2800)
-            cleaned = self._clean_html_for_telegram(response)
-            if not cleaned.strip().startswith('<'): cleaned = f'<b>🍽️ {safe_dish}</b>\n\n{cleaned}'
-            
-            # ВАЛИДАЦИЯ (САМОПРОВЕРКА)
-            is_valid, issues = await self.validate_recipe_consistency(safe_products, cleaned)
-            if not is_valid:
-                logger.warning(f"Validation failed: {issues}. Regenerating...")
-                return await self.regenerate_recipe_without_missing(safe_dish, safe_products, cleaned, issues)
-                
-            return cleaned
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return self._fallback_recipe(safe_dish, safe_products)
-
-    async def generate_freestyle_recipe(self, dish_name: str) -> str:
-        safe_dish = self._sanitize_input(dish_name, 100)
-        
-        system_prompt = f"""Ты Бренд-шеф. Напиши рецепт.
-
-{self.FLAVOR_RULES}
-
-ФОРМАТ ВЫВОДА (Telegram HTML):
-1. <b>Название блюда</b>
-2. 📦 <b>Ингредиенты:</b>
-   🔸 Ингредиент 1
-3. 📊 <b>Пищевая ценность на 1 порцию:</b>
-   🥚 Белки: ... г
-   🥑 Жиры: ... г
-   🌾 Углеводы: ... г
-   ⚡ Энерг. ценность: ... ккал
-4. ⏱ <b>Время:</b> ... мин
-5. 🪦 <b>Сложность:</b> ...
-6. 👥 <b>Порции:</b> ...
-7. 👨‍🍳 <b>Приготовление:</b>
-   1. Шаг 1 (выделяй <b>жирным</b> действия)
-8. 💡 <b>Секрет шефа:</b> (лайфхак)
-
-Используй только HTML."""
-
-        user_prompt = f"Рецепт: {safe_dish}"
-        try:
-            response = await self._send_groq_request(system_prompt, user_prompt, "freestyle_recipe", 0.7, 2800)
-            cleaned = self._clean_html_for_telegram(response)
-            if not cleaned.strip().startswith('<'): cleaned = f'<b>👨‍🍳 {safe_dish}</b>\n\n{cleaned}'
-            return cleaned
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            return self._fallback_recipe(safe_dish, "Классические")
-
-    async def generate_comparison(self, query: str) -> str:
-        try:
-            system_prompt = "Сравни продукты. Структура: <b>Вкус</b>, <b>Польза</b>, <b>Вывод</b>. HTML."
-            response = await self._send_groq_request(system_prompt, query, "comparison", 0.5, 1500)
-            return self._clean_html_for_telegram(response)
-        except: return "Ошибка сравнения"
-
-    async def generate_cooking_advice(self, query: str) -> str:
-        try:
-            system_prompt = "Дай кулинарный совет. Используй <b>жирный</b>. HTML."
-            response = await self._send_groq_request(system_prompt, query, "cooking_advice", 0.6, 1500)
-            return self._clean_html_for_telegram(response)
-        except: return "Ошибка совета"
-
-    async def generate_nutrition_info(self, query: str) -> str:
-        try:
-            system_prompt = "Дай КБЖУ и пользу. Используй эмодзи. HTML."
-            response = await self._send_groq_request(system_prompt, query, "nutrition", 0.4, 1500)
-            return self._clean_html_for_telegram(response)
-        except: return "Ошибка нутрициологии"
-
-    # --- ВАЛИДАЦИЯ И ПЕРЕГЕНЕРАЦИЯ (ВОЗВРАЩЕНО!) ---
+        return await self._make_groq_request(req)
     
-    async def validate_recipe_consistency(self, products: str, recipe: str) -> Tuple[bool, List[str]]:
-        """Проверяет, не придумал ли бот лишнего"""
-        issues = []
-        recipe_lower = recipe.lower()
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        """Извлекает JSON из текста"""
+        text = text.replace("```json", "").replace("```", "")
+        start_brace = text.find('{')
+        start_bracket = text.find('[')
         
-        # Критические проверки
-        checks = [
-            {'key': 'тесто', 'req': ['мука', 'тесто', 'лаваш'], 'msg': 'Требуется тесто, но нет муки'},
-            {'key': 'мука', 'req': ['мука'], 'msg': 'Требуется мука, но ее нет'},
-            {'key': 'яйц', 'req': ['яйц', 'яйко'], 'msg': 'Требуются яйца, но их нет'}
-        ]
+        if start_brace == -1:
+            start = start_bracket
+        elif start_bracket == -1:
+            start = start_brace
+        else:
+            start = min(start_brace, start_bracket)
         
-        # Если это фристайл (продуктов нет или мало), пропускаем жесткую проверку
-        if len(products) < 5: 
-            return True, []
-
-        prod_lower = products.lower()
-        for check in checks:
-            if check['key'] in recipe_lower and not any(r in prod_lower for r in check['req']):
-                issues.append(check['msg'])
+        end_brace = text.rfind('}')
+        end_bracket = text.rfind(']')
+        end = max(end_brace, end_bracket)
         
-        return len(issues) == 0, issues
-
-    async def regenerate_recipe_without_missing(self, dish_name: str, products: str, original: str, issues: List[str]) -> str:
-        """Переписывает рецепт, если валидация не прошла"""
-        safe_dish = self._sanitize_input(dish_name, 100)
-        safe_prods = self._sanitize_input(products, 300)
+        if start != -1 and end != -1 and end > start:
+            return text[start:end+1]
+        return text.strip()
+    
+    @staticmethod
+    def _sanitize_input(text: str, max_length: int = 500) -> str:
+        """Очищает и обрезает входной текст"""
+        if not text:
+            return ""
+        sanitized = text.strip().replace('"', "'").replace('`', "'")
+        sanitized = re.sub(r'[\r\n\t]', ' ', sanitized)
+        sanitized = re.sub(r'\s+', ' ', sanitized)
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length] + "..."
+        return sanitized
+    
+    @staticmethod
+    def _clean_html_for_telegram(text: str) -> str:
+        """Очищает текст от неподдерживаемых Telegram тегов"""
+        # Заменяем списки
+        text = text.replace("<ul>", "").replace("</ul>", "")
+        text = text.replace("<ol>", "").replace("</ol>", "")
+        text = text.replace("<li>", "• ").replace("</li>", "\n")
         
-        prompt = f"""ИСПРАВЬ РЕЦЕПТ: {safe_dish}
+        # Заменяем заголовки на жирный
+        text = re.sub(r'<h1>(.*?)</h1>', r'<b>\1</b>', text)
+        text = re.sub(r'<h2>(.*?)</h2>', r'<b>\1</b>', text)
+        text = re.sub(r'<h3>(.*?)</h3>', r'<b>\1</b>', text)
         
-ОШИБКИ: {', '.join(issues)}
-
-ЗАДАЧА:
-1. Убери ингредиенты, которых нет в списке: {safe_prods}
-2. Если нельзя приготовить без них - предложи ДРУГОЕ блюдо из этих продуктов.
-3. Сохрани красивое форматирование (HTML, эмодзи, КБЖУ).
-
-ФОРМАТ: (тот же, что и раньше)"""
+        # Убираем Markdown жирный/курсив
+        text = text.replace("**", "")
+        text = text.replace("##", "")
+        
+        return text
+    
+    # ==================== WHISPER 3 TURBO ====================
+    
+    async def transcribe_voice(self, audio_bytes: bytes) -> str:
+        """Транскрибация голоса через Whisper v3 Turbo"""
+        async def transcribe(client):
+            response = await client.audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=("audio.ogg", audio_bytes, "audio/ogg"),
+                language="ru",
+                response_format="text",
+            )
+            return response
         
         try:
-            response = await self._send_groq_request(prompt, "Fix recipe", "regenerate_recipe", 0.4, 2800)
-            return self._clean_html_for_telegram(response)
-        except:
-            return original + "\n\n⚠️ <i>Внимание: возможно, потребуются дополнительные ингредиенты.</i>"
+            return await self._make_groq_request(transcribe)
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            return f"❌ Ошибка распознавания: {str(e)[:100]}"
+    
+    # ==================== ЯЗЫКОВЫЕ ФУНКЦИИ ====================
+    
+    def detect_language_from_products(self, products: str) -> tuple[str, list]:
+        """Определяет язык продуктов и возвращает иностранные слова"""
+        products_lower = products.lower()
+        detected_languages = []
+        foreign_words = []
+        
+        for lang, keywords in self.LANGUAGE_KEYWORDS.items():
+            lang_words = []
+            for keyword in keywords:
+                # Ищем целые слова, чтобы избежать частичных совпадений
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+                if re.search(pattern, products_lower):
+                    lang_words.append(keyword)
+            
+            if lang_words:
+                detected_languages.append(lang)
+                foreign_words.extend(lang_words)
+        
+        # Возвращаем основной язык (первый обнаруженный) и список иностранных слов
+        main_language = detected_languages[0] if detected_languages else 'russian'
+        return main_language, foreign_words
+    
+    def create_language_context(self, language: str, foreign_words: list) -> str:
+        """Создает контекст для иностранных продуктов"""
+        if language == 'russian' or not foreign_words:
+            return ""
+        
+        # Создаем перевод иностранных слов
+        translations = ", ".join([f"{word} (ингредиент)" for word in foreign_words])
+        cuisine = self.NATIONAL_CUISINES.get(language, "международная кухня")
+        
+        return f"""
+🌍 ИНОСТРАННЫЕ ПРОДУКТЫ:
+Обнаружены продукты на {language} языке: {translations}
+Рекомендую использовать {cuisine}.
+В рецепте указывай иностранные названия с переводом в скобках, например: "Kartoffeln (картофель)".
+"""
+    
+    # ==================== ВАЛИДАЦИЯ РЕЦЕПТОВ ====================
+    
+    async def validate_recipe_consistency(self, ingredients_text: str, recipe_text: str) -> tuple[bool, list]:
+        """
+        Проверяет консистентность рецепта
+        Returns: (is_valid, list_of_issues)
+        """
+        issues = []
+        
+        try:
+            # Извлекаем список ингредиентов из текста рецепта
+            recipe_lower = recipe_text.lower()
+            
+            # Критические проверки
+            critical_checks = [
+                {
+                    'keyword': 'тесто',
+                    'required': ['мука', 'тесто', 'лаваш', 'блин', 'корж', 'тортилья'],
+                    'message': 'Рецепт требует теста, но в ингредиентах нет муки или готового теста'
+                },
+                {
+                    'keyword': 'мука',
+                    'required': ['мука'],
+                    'message': 'Рецепт требует муки, но её нет в ингредиентах'
+                },
+                {
+                    'keyword': 'запекать',
+                    'required': ['духовк', 'печь', 'запекать'],
+                    'message': 'Рецепт требует запекания, но это нормально (духовка есть на кухне)'
+                },
+                {
+                    'keyword': 'яйц',
+                    'required': ['яйц', 'яйко'],
+                    'message': 'Рецепт требует яиц, но их нет в ингредиентах'
+                },
+                {
+                    'keyword': 'молок',
+                    'required': ['молок', 'сливк', 'кефир'],
+                    'message': 'Рецепт требует молока/сливок, но их нет в ингредиентах'
+                }
+            ]
+            
+            ingredients_lower = ingredients_text.lower()
+            
+            for check in critical_checks:
+                if check['keyword'] in recipe_lower:
+                    # Проверяем, есть ли хоть один из требуемых ингредиентов
+                    has_required = any(req in ingredients_lower for req in check['required'])
+                    
+                    # Для теста/муки это критическая ошибка
+                    if check['keyword'] in ['тесто', 'мука'] and not has_required:
+                        issues.append(f"❌ {check['message']}")
+                    # Для остальных - предупреждение
+                    elif not has_required:
+                        issues.append(f"⚠️ {check['message']}")
+            
+            # Проверяем странные комбинации
+            if 'суп' in recipe_lower and 'духовк' in recipe_lower:
+                issues.append("⚠️ Суп обычно не запекают в духовке")
+            
+            if 'салат' in recipe_lower and 'запекать' in recipe_lower:
+                issues.append("⚠️ Салаты обычно не запекают")
+            
+            return len([i for i in issues if i.startswith('❌')]) == 0, issues
+            
+        except Exception as e:
+            logger.error(f"Validation error: {e}")
+            return True, []  # В случае ошибки пропускаем валидацию
+    
+    async def regenerate_recipe_without_missing(self, dish_name: str, products: str, original_recipe: str, issues: list) -> str:
+        """Перегенерирует рецепт без недостающих ингредиентов"""
+        safe_dish = self._sanitize_input(dish_name, max_length=150)
+        safe_prods = self._sanitize_input(products, max_length=600)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_prods)
+        language_context = self.create_language_context(language, foreign_words)
+        
+        # Формируем инструкции на основе найденных проблем
+        constraints = ""
+        if any('тесто' in issue.lower() or 'мука' in issue.lower() for issue in issues):
+            constraints = "НЕ используй тесто, муку, выпечку. Сделай холодное блюдо, салат или закуску без теста."
+        
+        prompt = f"""ПЕРЕГЕНЕРАЦИЯ РЕЦЕПТА: {safe_dish}
 
+🚫 ПРОБЛЕМЫ В ПРЕДЫДУЩЕМ РЕЦЕПТЕ:
+{chr(10).join(issues)}
+
+🎯 НОВЫЕ ТРЕБОВАНИЯ:
+1. Используй ТОЛЬКО эти ингредиенты: {safe_prods}
+2. {constraints}
+3. Можно использовать БАЗУ: соль, сахар, вода, растительное масло, специи
+4. НЕ добавляй ингредиенты, которых нет в списке
+5. Сделай рецепт реалистичным и выполнимым
+
+🛒 ИСХОДНЫЕ ПРОДУКТЫ: {safe_prods}
+{language_context}
+
+📋 ФОРМАТ РЕЦЕПТА (Telegram HTML):
+<b>{safe_dish}</b>
+
+📦 <b>Ингредиенты:</b>
+🔸 [Название] — [количество]
+
+📊 <b>Пищевая ценность на 1 порцию:</b>
+🥚 Белки: X г
+🥑 Жиры: X г
+🌾 Углеводы: X г
+⚡ Энерг. ценность: X ккал
+
+⏱ <b>Время:</b> X мин
+🪦 <b>Сложность:</b> [уровень]
+👥 <b>Порции:</b> X
+
+👨‍🍳 <b>Приготовление:</b>
+1. [шаг]
+2. [шаг]
+
+💡 <b>СОВЕТ ШЕФ-ПОВАРА:</b>
+[Один конкретный совет для улучшения вкуса. 1-2 предложения.]
+
+👨‍🍳 <b>Приятного аппетита!</b>
+"""
+        
+        try:
+            raw_html = await self._send_groq_request(prompt, "Regenerate recipe without missing ingredients", 
+                                                   task_type="regeneration", temperature=0.4, max_tokens=2500)
+            
+            # Проверяем новый рецепт
+            new_recipe = self._clean_html_for_telegram(raw_html) + "\n\n👨‍🍳 <b>Приятного аппетита!</b>"
+            is_valid, new_issues = await self.validate_recipe_consistency(safe_prods, new_recipe)
+            
+            if not is_valid:
+                logger.warning(f"Regenerated recipe still has issues: {new_issues}")
+                # Если проблемы остались, добавляем примечание
+                new_recipe += f"\n\n⚠️ <i>Примечание: {new_issues[0] if new_issues else 'Рецепт может требовать дополнительных ингредиентов'}</i>"
+            
+            return new_recipe
+            
+        except Exception as e:
+            logger.error(f"Regeneration error: {e}")
+            # Возвращаем оригинальный рецепт с пометкой
+            return original_recipe + "\n\n⚠️ <i>Примечание: рецепт требует теста/муки, которых нет в ваших продуктах. Рассмотрите вариант холодного десерта.</i>"
+    
+    # ==================== АНАЛИЗ И КАТЕГОРИИ ====================
+    
+    async def analyze_categories(self, products: str) -> List[str]:
+        """Определяет категории блюд на основе продуктов"""
+        safe_products = self._sanitize_input(products, max_length=300)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_products)
+        language_context = self.create_language_context(language, foreign_words)
+        
+        items = re.split(r'[,;\n]', safe_products)
+        items_count = len([i for i in items if len(i.strip()) > 1])
+        mix_available = items_count >= 8
+        
+        prompt = f"""Analyze these products: {safe_products}
+{language_context}
+Return a JSON ARRAY of category strings from: ["breakfast", "soup", "main", "salad", "dessert", "drink", "snack", "mix"]
+
+Example response: ["main", "soup", "salad"]
+
+Return ONLY the JSON array, no other text."""
+        
+        res = await self._send_groq_request(prompt, "Categorize", task_type="categorization", temperature=0.2)
+        
+        try:
+            data = json.loads(self._extract_json(res))
+            clean_categories = []
+            
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, str):
+                        clean_categories.append(item.lower())
+                    elif isinstance(item, dict):
+                        vals = list(item.values())
+                        if vals and isinstance(vals[0], str):
+                            clean_categories.append(vals[0].lower())
+            
+            # Добавляем/убираем mix в зависимости от количества продуктов
+            if mix_available and "mix" not in clean_categories:
+                clean_categories.insert(0, "mix")
+            if not mix_available and "mix" in clean_categories:
+                clean_categories.remove("mix")
+            
+            return clean_categories[:4] if clean_categories else ["main", "soup"]
+        except:
+            return ["main", "soup"]
+    
+    # ==================== ГЕНЕРАЦИЯ БЛЮД ====================
+    
+    async def generate_dishes_list(self, products: str, category: str) -> List[Dict[str, str]]:
+        """Генерирует список блюд для категории"""
+        safe_products = self._sanitize_input(products, max_length=400)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_products)
+        language_context = self.create_language_context(language, foreign_words)
+        
+        if category == "mix":
+            prompt = f"""Create ONE full meal with 4 dishes using: {safe_products}
+{language_context}
+
+Return JSON ARRAY with exactly 4 objects:
+[
+  {{"name": "Суп", "desc": "Description"}},
+  {{"name": "Второе блюдо", "desc": "Description"}},
+  {{"name": "Салат", "desc": "Description"}},
+  {{"name": "Напиток", "desc": "Description"}}
+]
+
+Return ONLY the JSON array."""
+        else:
+            prompt = f"""Suggest 5-6 dishes for category '{category}' using: {safe_products}
+{language_context}
+{self.RECIPE_VALIDATION_RULES}
+
+Return JSON ARRAY:
+[{{"name": "Dish name", "desc": "Short appetizing description"}}]
+
+Return ONLY the JSON array."""
+        
+        res = await self._send_groq_request(prompt, "Generate menu", task_type="generation", temperature=0.5)
+        
+        try:
+            data = json.loads(self._extract_json(res))
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for k in data:
+                    if isinstance(data[k], list):
+                        return data[k]
+            return []
+        except:
+            return []
+    
+    # ==================== ГЕНЕРАЦИЯ РЕЦЕПТОВ ====================
+    
+    async def generate_recipe(self, dish_name: str, products: str) -> str:
+        """Генерация полного рецепта с валидацией"""
+        safe_dish = self._sanitize_input(dish_name, max_length=150)
+        safe_prods = self._sanitize_input(products, max_length=600)
+        
+        # Определяем язык продуктов
+        language, foreign_words = self.detect_language_from_products(safe_prods)
+        language_context = self.create_language_context(language, foreign_words)
+        
+        is_mix = "полный обед" in safe_dish.lower() or "комплекс" in safe_dish.lower()
+        instruction = "🍱 ПОЛНЫЙ ОБЕД ИЗ 4 БЛЮД." if is_mix else "Напиши рецепт одного блюда."
+        
+        prompt = f"""Ты профессиональный шеф. Напиши рецепт: "{safe_dish}"
+        
+{self.RECIPE_VALIDATION_RULES}
+
+🛒 ПРОДУКТЫ (используй ТОЛЬКО эти): {safe_prods}
+{language_context}
+📦 БАЗА (можно использовать БЕЗ ограничений): соль, сахар, вода, растительное масло, специи (перец, паприка)
+
+{self.FLAVOR_RULES}
+{instruction}
+
+🎯 КРИТИЧЕСКИЕ ТРЕБОВАНИЯ:
+1. НЕ добавляй муку, тесто, яйца, молоко - если их нет в продуктах
+2. Если в продуктах нет муки - делай ХОЛОДНОЕ блюдо без выпечки
+3. Используй ТОЛЬКО простые кухонные инструменты (нож, ложка, сковорода, кастрюля)
+4. Будь честен - если блюдо невозможно, предложи альтернативу
+
+📋 СТРОГИЙ ФОРМАТ (Telegram HTML):
+<b>{safe_dish}</b>
+
+📦 <b>Ингредиенты:</b>
+🔸 [Название] — [количество] (ТОЛЬКО из списка продуктов)
+
+📊 <b>Пищевая ценность на 1 порцию:</b>
+🥚 Белки: X г
+🥑 Жиры: X г
+🌾 Углеводы: X г
+⚡ Энерг. ценность: X ккал
+
+⏱ <b>Время:</b> X мин
+🪦 <b>Сложность:</b> [уровень]
+👥 <b>Порции:</b> X
+
+👨‍🍳 <b>Приготовление:</b>
+1. [шаг]
+2. [шаг]
+
+💡 <b>СОВЕТ ШЕФ-ПОВАРА:</b>
+[Один конкретный совет для улучшения вкуса. 1-2 предложения.]
+"""
+        
+        raw_html = await self._send_groq_request(prompt, "Write recipe", task_type="recipe", temperature=0.4, max_tokens=3000)
+        recipe = self._clean_html_for_telegram(raw_html) + "\n\n👨‍🍳 <b>Приятного аппетита!</b>"
+        
+        # ВАЛИДАЦИЯ РЕЦЕПТА
+        is_valid, issues = await self.validate_recipe_consistency(safe_prods, recipe)
+        
+        if not is_valid:
+            logger.warning(f"Recipe validation failed: {issues}")
+            # Пытаемся перегенерировать рецепт
+            recipe = await self.regenerate_recipe_without_missing(safe_dish, safe_prods, recipe, issues)
+        
+        return recipe
+    
+    async def generate_freestyle_recipe(self, dish_name: str) -> str:
+        """Генерация рецепта без продуктов (креативный режим)"""
+        safe_dish = self._sanitize_input(dish_name, max_length=100)
+        
+        # Нормализуем название блюда (именительный падеж)
+        normalized_dish = self._normalize_dish_name(safe_dish)
+        
+        prompt = f"""Ты креативный шеф-повар. Создай рецепт: "{normalized_dish}"
+
+{self.FLAVOR_RULES}
+
+🎯 ТРЕБОВАНИЯ:
+- Будь реалистичен в выборе ингредиентов
+- Не предлагай редкие или дорогие компоненты
+- Используй стандартные кухонные инструменты
+
+📋 ФОРМАТ РЕЦЕПТА (Telegram HTML):
+{normalized_dish}
+
+📦 <b>Ингредиенты:</b>
+🔸 [Название] — [количество]
+
+📊 <b>Пищевая ценность на 1 порцию:</b>
+🥚 Белки: X г
+🥑 Жиры: X г
+🌾 Углеводы: X г
+⚡ Энерг. ценность: X ккал
+
+⏱ <b>Время:</b> X мин
+🪦 <b>Сложность:</b> [уровень]
+👥 <b>Порции:</b> X
+
+👨‍🍳 <b>Приготовление:</b>
+1. [шаг]
+2. [шаг]
+
+💡 <b>СОВЕТ ШЕФ-ПОВАРА:</b>
+[Лайфхак по приготовлению или подаче. 1-2 предложения.]
+"""
+        
+        raw_html = await self._send_groq_request(prompt, "Create recipe", task_type="freestyle", temperature=0.6, max_tokens=2000)
+        recipe = self._clean_html_for_telegram(raw_html) + "\n\n👨‍🍳 <b>Приятного аппетита!</b>"
+        
+        # Для фристайла тоже делаем базовую валидацию
+        is_valid, issues = await self.validate_recipe_consistency("", recipe)
+        
+        if not is_valid and any('тесто' in issue.lower() or 'мука' in issue.lower() for issue in issues):
+            # Добавляем примечание о недостающих ингредиентах
+            recipe += "\n\n⚠️ <i>Для этого рецепта могут потребоваться дополнительные ингредиенты (мука, тесто и т.д.)</i>"
+        
+        return recipe
+    
+    def _normalize_dish_name(self, dish_name: str) -> str:
+        """Нормализует название блюда (упрощенная версия)"""
+        # Удаляем кавычки, если они только в начале и конце
+        dish_name = dish_name.strip().strip('"\'')
+        
+        # Простая нормализация: первая буква заглавная
+        if dish_name and dish_name[0].islower():
+            dish_name = dish_name[0].upper() + dish_name[1:]
+        
+        # Убираем лишние знаки препинания в конце
+        dish_name = dish_name.rstrip('.!?,;')
+        
+        return dish_name
+
+# Глобальный экземпляр
 groq_service = GroqService()

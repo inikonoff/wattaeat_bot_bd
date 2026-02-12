@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
-from config import DATABASE_URL, ADMIN_IDS
+from config import DATABASE_URL, DAILY_IMAGE_LIMIT_NORMAL, DAILY_IMAGE_LIMIT_ADMIN, ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +50,31 @@ class Database:
         async with self.pool.acquire() as conn:
             user = await conn.fetchrow("SELECT * FROM users WHERE id = $1", telegram_id)
             if not user:
+                limit = DAILY_IMAGE_LIMIT_ADMIN if telegram_id in ADMIN_IDS else DAILY_IMAGE_LIMIT_NORMAL
                 user = await conn.fetchrow(
-                    "INSERT INTO users (id, username, first_name, last_name, language, is_banned) VALUES ($1, $2, $3, $4, $5, FALSE) RETURNING *",
-                    telegram_id, username, first_name, last_name, language
+                    "INSERT INTO users (id, username, first_name, last_name, language, daily_image_limit, last_image_date) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE) RETURNING *",
+                    telegram_id, username, first_name, last_name, language, limit
                 )
             return dict(user)
+
+    async def check_image_limit(self, telegram_id: int) -> tuple[bool, int, int]:
+        async with self.pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT daily_image_limit, images_generated_today, last_image_date FROM users WHERE id = $1", telegram_id)
+            if not user: return False, 0, 0
+            
+            limit = user['daily_image_limit']
+            if limit == -1: return True, -1, -1
+            
+            if user['last_image_date'] != datetime.now().date():
+                await conn.execute("UPDATE users SET images_generated_today = 0, last_image_date = CURRENT_DATE WHERE id = $1", telegram_id)
+                return True, limit, limit
+            
+            remaining = limit - user['images_generated_today']
+            return remaining > 0, remaining, limit
+
+    async def increment_image_count(self, telegram_id: int):
+        async with self.pool.acquire() as conn:
+            await conn.execute("UPDATE users SET images_generated_today = images_generated_today + 1 WHERE id = $1", telegram_id)
 
     # --- Session Methods ---
     async def get_session(self, telegram_id: int) -> Optional[Dict]:
@@ -167,7 +187,7 @@ class Database:
             logger.info(f"User {user_id} cleared history. Deleted {deleted_count} recipes")
             return deleted_count
 
-    # --- НОВЫЕ МЕТОДЫ ДЛЯ АДМИНКИ ---
+    # --- АДМИНСКИЕ МЕТОДЫ ---
     
     async def get_all_users(self, limit: int = 50, offset: int = 0) -> List[Dict]:
         """Получает список всех пользователей с их статистикой"""
@@ -179,118 +199,15 @@ class Database:
                     u.first_name,
                     u.last_name,
                     u.created_at,
-                    u.is_banned,
                     COUNT(r.id) as recipe_count,
                     COUNT(CASE WHEN r.is_favorite = TRUE THEN 1 END) as favorites_count
                 FROM users u
                 LEFT JOIN recipes r ON u.id = r.user_id
-                GROUP BY u.id, u.username, u.first_name, u.last_name, u.created_at, u.is_banned
+                GROUP BY u.id, u.username, u.first_name, u.last_name, u.created_at
                 ORDER BY u.created_at DESC
                 LIMIT $1 OFFSET $2
             """, limit, offset)
             return [dict(r) for r in rows]
-    
-    async def get_user_by_id(self, user_id: int) -> Optional[Dict]:
-        """Получает информацию о конкретном пользователе"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT 
-                    u.*,
-                    COUNT(r.id) as recipe_count,
-                    COUNT(CASE WHEN r.is_favorite = TRUE THEN 1 END) as favorites_count,
-                    MAX(r.created_at) as last_recipe_date
-                FROM users u
-                LEFT JOIN recipes r ON u.id = r.user_id
-                WHERE u.id = $1
-                GROUP BY u.id
-            """, user_id)
-            return dict(row) if row else None
-    
-    async def ban_user(self, user_id: int) -> bool:
-        """Блокирует пользователя"""
-        async with self.pool.acquire() as conn:
-            try:
-                result = await conn.execute(
-                    "UPDATE users SET is_banned = TRUE WHERE id = $1",
-                    user_id
-                )
-                return result == "UPDATE 1"
-            except asyncpg.exceptions.UndefinedColumnError:
-                # Если колонки нет, сначала создаем её
-                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE")
-                # Затем устанавливаем значение
-                result = await conn.execute(
-                    "UPDATE users SET is_banned = TRUE WHERE id = $1",
-                    user_id
-                )
-                return result == "UPDATE 1"
-    
-    async def unban_user(self, user_id: int) -> bool:
-        """Разблокирует пользователя"""
-        async with self.pool.acquire() as conn:
-            try:
-                result = await conn.execute(
-                    "UPDATE users SET is_banned = FALSE WHERE id = $1",
-                    user_id
-                )
-                return result == "UPDATE 1"
-            except asyncpg.exceptions.UndefinedColumnError:
-                # Если колонки нет, сначала создаем её
-                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE")
-                return False
-    
-    async def is_user_banned(self, user_id: int) -> bool:
-        """Проверяет, заблокирован ли пользователь"""
-        async with self.pool.acquire() as conn:
-            try:
-                is_banned = await conn.fetchval(
-                    "SELECT is_banned FROM users WHERE id = $1",
-                    user_id
-                )
-                return bool(is_banned)
-            except asyncpg.exceptions.UndefinedColumnError:
-                # Если колонки нет, пользователь точно не заблокирован
-                return False
-    
-    async def get_all_user_ids(self) -> List[int]:
-        """Получает список всех ID пользователей (для рассылки)"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT id FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
-            return [row['id'] for row in rows]
-    
-    async def get_user_count_by_status(self) -> Dict:
-        """Статистика пользователей по статусам"""
-        async with self.pool.acquire() as conn:
-            total = await conn.fetchval("SELECT COUNT(*) FROM users")
-            
-            # Проверяем наличие колонки is_banned
-            try:
-                # Сначала проверяем существование колонки
-                column_exists = await conn.fetchval("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.columns 
-                        WHERE table_name = 'users' AND column_name = 'is_banned'
-                    )
-                """)
-                
-                if column_exists:
-                    active = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = FALSE OR is_banned IS NULL")
-                    banned = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
-                else:
-                    # Если колонки нет, все пользователи активны
-                    active = total
-                    banned = 0
-                    
-            except Exception as e:
-                logger.warning(f"Ошибка проверки колонки is_banned: {e}")
-                active = total
-                banned = 0
-            
-            return {
-                'total': total,
-                'active': active,
-                'banned': banned
-            }
     
     # --- СТАТИСТИКА ДЛЯ ПОЛЬЗОВАТЕЛЯ ---
     
@@ -335,63 +252,6 @@ class Database:
                 'active_sessions': active_sessions,
                 'saved_recipes': recipes,
                 'favorites': favorites
-            }
-    
-    async def get_retention_stats(self) -> Dict:
-        """Статистика удержания пользователей"""
-        async with self.pool.acquire() as conn:
-            # Пользователи, создавшие рецепты
-            users_with_recipes = await conn.fetchval(
-                "SELECT COUNT(DISTINCT user_id) FROM recipes"
-            )
-            
-            # Новые пользователи за последние 30 дней
-            month_ago = datetime.now() - timedelta(days=30)
-            new_users_month = await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE created_at >= $1",
-                month_ago
-            )
-            
-            # Активные пользователи из новых (создали хотя бы 1 рецепт)
-            active_new_users = await conn.fetchval("""
-                SELECT COUNT(DISTINCT u.id)
-                FROM users u
-                JOIN recipes r ON u.id = r.user_id
-                WHERE u.created_at >= $1
-            """, month_ago)
-            
-            # Удержание
-            retention_rate = (active_new_users / new_users_month * 100) if new_users_month > 0 else 0
-            
-            # Среднее количество рецептов на пользователя
-            avg_recipes_per_user = await conn.fetchval("""
-                SELECT AVG(recipe_count) FROM (
-                    SELECT user_id, COUNT(*) as recipe_count
-                    FROM recipes
-                    GROUP BY user_id
-                ) sub
-            """) or 0
-            
-            # Активность по дням
-            daily_activity = await conn.fetch("""
-                SELECT 
-                    DATE(created_at) as date,
-                    COUNT(DISTINCT user_id) as active_users,
-                    COUNT(*) as recipes_created
-                FROM recipes
-                WHERE created_at >= NOW() - INTERVAL '14 days'
-                GROUP BY DATE(created_at)
-                ORDER BY date DESC
-                LIMIT 14
-            """)
-            
-            return {
-                'users_with_recipes': users_with_recipes,
-                'new_users_month': new_users_month,
-                'active_new_users': active_new_users,
-                'retention_rate': round(retention_rate, 1),
-                'avg_recipes_per_user': round(float(avg_recipes_per_user), 1),
-                'daily_activity': [dict(row) for row in daily_activity]
             }
     
     async def get_activity_by_weekday(self) -> List[Dict]:
@@ -460,7 +320,7 @@ class Database:
             return [dict(r) for r in rows]
     
     async def get_top_ingredients(self, period: str = 'month', limit: int = 10) -> List[Dict]:
-        """Топ продуктов - УПРОЩЕННАЯ И БЕЗОПАСНАЯ ВЕРСИЯ"""
+        """Топ продуктов - ИСПРАВЛЕННАЯ ВЕРСИЯ (без SQL-инъекции)"""
         async with self.pool.acquire() as conn:
             # Безопасное определение интервала
             intervals = {
@@ -470,37 +330,26 @@ class Database:
             }
             days = intervals.get(period, 30)
             
-            # Простой запрос без сложных регулярных выражений
-            try:
-                rows = await conn.fetch("""
-                    SELECT 
-                        products_used
+            rows = await conn.fetch("""
+                SELECT 
+                    LOWER(TRIM(ingredient)) as name,
+                    COUNT(*) as count
+                FROM (
+                    SELECT UNNEST(REGEXP_SPLIT_TO_ARRAY(products_used, ',\\s*')) as ingredient
                     FROM recipes
                     WHERE created_at >= NOW() - INTERVAL '1 day' * $1
                     AND products_used IS NOT NULL
                     AND TRIM(products_used) != ''
-                    LIMIT 1000
-                """, days)
-                
-                # Собираем ингредиенты вручную
-                ingredient_counter = {}
-                for row in rows:
-                    products = row['products_used']
-                    if products:
-                        # Простое разделение по запятым
-                        ingredients = [ing.strip().lower() for ing in products.split(',') if ing.strip()]
-                        for ingredient in ingredients:
-                            if len(ingredient) > 1:  # Игнорируем слишком короткие
-                                ingredient_counter[ingredient] = ingredient_counter.get(ingredient, 0) + 1
-                
-                # Сортируем и берем топ
-                sorted_items = sorted(ingredient_counter.items(), key=lambda x: x[1], reverse=True)[:limit]
-                
-                return [{'name': name, 'count': count} for name, count in sorted_items]
-                
-            except Exception as e:
-                logger.error(f"Ошибка получения топ ингредиентов: {e}")
-                return []
+                ) sub
+                WHERE ingredient IS NOT NULL 
+                AND TRIM(ingredient) != ''
+                AND LENGTH(TRIM(ingredient)) > 1
+                GROUP BY LOWER(TRIM(ingredient))
+                HAVING COUNT(*) >= 1
+                ORDER BY count DESC
+                LIMIT $2
+            """, days, limit)
+            return [{'name': r['name'], 'count': r['count']} for r in rows]
     
     async def get_top_dishes(self, limit: int = 5) -> List[Dict]:
         """Топ блюд"""

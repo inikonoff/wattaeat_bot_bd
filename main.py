@@ -3,20 +3,14 @@ import os
 import logging
 import sys
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 from config import TELEGRAM_TOKEN
 from handlers import register_handlers
 from state_manager import state_manager
 from aiohttp import web
 from database import db
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -34,23 +28,31 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-async def run_periodic_cleanup():
-    """Фоновая задача для очистки старого кэша из памяти"""
+async def periodic_cache_cleanup():
+    """Периодическая очистка кэша каждые 30 минут"""
     while True:
-        await asyncio.sleep(3600)  # Запускаем раз в час
-        await state_manager.periodic_cleanup()
+        try:
+            await asyncio.sleep(1800)  # 30 минут
+            await state_manager.periodic_cleanup()
+        except asyncio.CancelledError:
+            logger.info("Периодическая очистка кэша остановлена")
+            break
+        except Exception as e:
+            logger.error(f"Ошибка в periodic_cache_cleanup: {e}", exc_info=True)
 
 async def main():
     logger.info("🚀 Запуск бота")
     
-    # 1. Инициализация
+    # 1. БД и Хранилище
+    await db.connect()
     await state_manager.initialize()
     
-    # 2. Запуск очистки памяти (важно без Redis!)
-    asyncio.create_task(run_periodic_cleanup())
-    
-    # 3. Веб-сервер
+    # 2. Веб-сервер
     await start_web_server()
+    
+    # 3. Запуск периодической очистки кэша
+    cleanup_task = asyncio.create_task(periodic_cache_cleanup())
+    logger.info("✅ Периодическая очистка кэша запущена (каждые 30 мин)")
     
     # 4. Бот
     register_handlers(dp)
@@ -59,7 +61,12 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
-        await state_manager.shutdown()
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        await db.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

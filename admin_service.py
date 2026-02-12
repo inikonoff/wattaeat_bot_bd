@@ -1,5 +1,4 @@
 import logging
-import html
 from typing import List, Dict
 from database import db
 
@@ -100,153 +99,6 @@ class AdminService:
         except Exception as e:
             logger.error(f"Ошибка получения статистики: {e}", exc_info=True)
             return "❌ Ошибка получения статистики"
-    
-    @staticmethod
-    async def get_retention_message() -> str:
-        """Статистика удержания пользователей"""
-        try:
-            retention_stats = await db.get_retention_stats()
-            
-            text = "📈 <b>Статистика удержания пользователей</b>\n\n"
-            
-            text += f"👥 Всего пользователей с рецептами: <b>{retention_stats['users_with_recipes']}</b>\n"
-            text += f"🆕 Новых пользователей за 30 дней: <b>{retention_stats['new_users_month']}</b>\n"
-            text += f"🔥 Активных из новых: <b>{retention_stats['active_new_users']}</b>\n"
-            text += f"🎯 Удержание новых пользователей: <b>{retention_stats['retention_rate']}%</b>\n"
-            text += f"📊 Среднее рецептов на пользователя: <b>{retention_stats['avg_recipes_per_user']}</b>\n\n"
-            
-            # График активности за 14 дней
-            if retention_stats['daily_activity']:
-                text += "📅 <b>Активность за 14 дней:</b>\n"
-                
-                max_active = max(item['active_users'] for item in retention_stats['daily_activity']) if retention_stats['daily_activity'] else 1
-                
-                for item in retention_stats['daily_activity']:
-                    date_str = item['date'].strftime('%d.%m')
-                    bar = AdminService._create_bar_chart(item['active_users'], max_active, 8, "🟢")
-                    text += f"{date_str} {bar} {item['active_users']} 👤 ({item['recipes_created']} 📝)\n"
-            
-            return text
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения статистики удержания: {e}", exc_info=True)
-            return "❌ Ошибка получения статистики удержания"
-    
-    @staticmethod
-    async def get_user_info_message(user_id: int) -> str:
-        """Информация о конкретном пользователе"""
-        try:
-            user_info = await db.get_user_by_id(user_id)
-            
-            if not user_info:
-                return f"❌ Пользователь с ID {user_id} не найден"
-            
-            # Формируем имя
-            name_parts = []
-            if user_info.get('first_name'):
-                name_parts.append(user_info['first_name'])
-            if user_info.get('last_name'):
-                name_parts.append(user_info['last_name'])
-            
-            display_name = " ".join(name_parts) if name_parts else "Аноним"
-            
-            # Статус блокировки
-            status = "🚫 <b>Заблокирован</b>" if user_info.get('is_banned') else "✅ <b>Активен</b>"
-            
-            text = f"👤 <b>Информация о пользователе</b>\n\n"
-            text += f"🆔 ID: <code>{user_info['id']}</code>\n"
-            text += f"👤 Имя: <b>{display_name}</b>\n"
-            
-            if user_info.get('username'):
-                text += f"📱 Username: @{user_info['username']}\n"
-            
-            text += f"📅 Регистрация: {user_info['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
-            text += f"📊 Статус: {status}\n\n"
-            
-            # Статистика
-            text += f"📝 Создано рецептов: <b>{user_info.get('recipe_count', 0)}</b>\n"
-            text += f"❤️ В избранном: <b>{user_info.get('favorites_count', 0)}</b>\n"
-            
-            if user_info.get('last_recipe_date'):
-                text += f"🕐 Последний рецепт: {user_info['last_recipe_date'].strftime('%d.%m.%Y')}\n"
-            
-            return text
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения информации о пользователе {user_id}: {e}")
-            return f"❌ Ошибка получения информации о пользователе {user_id}"
-    
-    @staticmethod
-    async def get_user_status_message() -> str:
-        """Статистика пользователей по статусам"""
-        try:
-            user_stats = await db.get_user_count_by_status()
-            
-            text = "👥 <b>Статистика пользователей по статусам</b>\n\n"
-            
-            text += f"👥 Всего пользователей: <b>{user_stats['total']}</b>\n"
-            text += f"✅ Активных: <b>{user_stats['active']}</b>\n"
-            text += f"🚫 Заблокированных: <b>{user_stats['banned']}</b>\n"
-            
-            # Процентное соотношение
-            if user_stats['total'] > 0:
-                active_percent = (user_stats['active'] / user_stats['total']) * 100
-                banned_percent = (user_stats['banned'] / user_stats['total']) * 100
-                
-                text += f"\n📊 <b>Соотношение:</b>\n"
-                text += f"✅ Активные: {active_percent:.1f}%\n"
-                text += f"🚫 Заблокированные: {banned_percent:.1f}%\n"
-            
-            return text
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения статистики пользователей: {e}")
-            return "❌ Ошибка получения статистики пользователей"
-    
-    @staticmethod
-    async def get_logs_message(lines: int = 20) -> str:
-        """Получает последние логи из файла"""
-        try:
-            import os
-            
-            log_file = "bot.log"
-            if not os.path.exists(log_file):
-                # Если файла нет, пробуем найти по стандартным путям
-                possible_paths = [
-                    "bot.log",
-                    "logs/bot.log", 
-                    "/var/log/bot.log",
-                    "./logs/bot.log"
-                ]
-                
-                for path in possible_paths:
-                    if os.path.exists(path):
-                        log_file = path
-                        break
-            
-            if not os.path.exists(log_file):
-                return "📋 <b>Логи бота</b>\n\nФайл логов не найден"
-            
-            with open(log_file, 'r', encoding='utf-8') as f:
-                all_lines = f.readlines()
-            
-            # Берем последние N строк
-            recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            
-            text = f"📋 <b>Логи бота (последние {len(recent_lines)} строк)</b>\n\n"
-            text += "```\n"
-            text += "".join(recent_lines)
-            text += "```"
-            
-            # Обрезаем если слишком длинное (Telegram лимит 4096 символов)
-            if len(text) > 4000:
-                text = text[:3900] + "\n... (логи обрезаны)\n```"
-            
-            return text
-            
-        except Exception as e:
-            logger.error(f"Ошибка чтения логов: {e}")
-            return f"❌ Ошибка чтения логов: {str(e)[:100]}"
     
     @staticmethod
     async def get_top_cooks_message() -> str:
@@ -396,18 +248,13 @@ class AdminService:
                 if user.get('last_name'):
                     name_parts.append(user['last_name'])
                 
-                raw_name = " ".join(name_parts) if name_parts else "Аноним"
-                # ЭКРАНИРОВАНИЕ HTML ЧТОБЫ НЕ ПАДАЛО
-                display_name = html.escape(raw_name)
+                display_name = " ".join(name_parts) if name_parts else "Аноним"
                 
                 # Username
                 username = f"@{user['username']}" if user.get('username') else "—"
                 
                 # ID
                 user_id = user['id']
-                
-                # Статус блокировки
-                status = "🚫" if user.get('is_banned') else "✅"
                 
                 # Статистика
                 recipes = user.get('recipe_count', 0)
@@ -416,7 +263,7 @@ class AdminService:
                 # Дата регистрации
                 created_at = user['created_at'].strftime('%d.%m.%Y') if user.get('created_at') else "—"
                 
-                text += f"{idx}. {status} <b>{display_name}</b>\n"
+                text += f"{idx}. <b>{display_name}</b>\n"
                 text += f"   🆔 ID: <code>{user_id}</code>\n"
                 text += f"   👤 Username: {username}\n"
                 text += f"   📝 Рецептов: {recipes} (❤️ {favorites})\n"

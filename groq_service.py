@@ -82,30 +82,55 @@ class GroqService:
         return text.strip()
 
     def _clean_html_for_telegram(self, text: str) -> str:
-        """Умная очистка и конвертация Markdown -> HTML"""
-        if not text: return ""
-            
-        # Markdown заголовки -> Bold
-        text = re.sub(r'#{1,6}\s+(.*?)$', r'<b>\1</b>', text, flags=re.MULTILINE)
-        # Markdown bold -> HTML bold
-        text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-        text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
-        # Markdown списки -> Эмодзи
-        text = re.sub(r'^\s*[\-\*]\s+(.*?)$', r'🔸 \1', text, flags=re.MULTILINE)
+        """Строгая очистка с правильным порядком обработки"""
+        if not text: 
+            return ""
         
-        # Очистка тегов
-        replacements = [
-            (r'<br/?>', r'\n'), (r'<p>', r''), (r'</p>', r'\n\n'),
-            (r'<ul>', r''), (r'</ul>', r''), (r'<ol>', r''), (r'</ol>', r''),
-            (r'<li>', r'🔸 '), (r'</li>', r'\n'),
-            (r'<h1>(.*?)</h1>', r'<b>\1</b>\n'),
-            (r'<h2>(.*?)</h2>', r'<b>\1</b>\n'),
-            (r'<h3>(.*?)</h3>', r'<b>\1</b>\n'),
-        ]
-        for pattern, replacement in replacements:
-            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-            
+        # ШАГ 1: Убираем ВСЕ Markdown-символы (до обработки HTML)
+        # Markdown заголовки
+        text = re.sub(r'#{1,6}\s+(.*?)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+        # Markdown bold/italic (порядок важен!)
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)  # жирный+курсив
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+        # Остатки одиночных звёздочек/решёток
+        text = text.replace('**', '').replace('##', '').replace('###', '').replace('####', '')
+        
+        # ШАГ 2: Markdown списки -> эмодзи
+        text = re.sub(r'^\s*[\-\*\+]\s+(.+)$', r'🔸 \1', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\d+\.\s+(.+)$', r'🔸 \1', text, flags=re.MULTILINE)
+        
+        # ШАГ 3: HTML-теги -> Telegram-совместимые
+        # Заголовки
+        text = re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'<b>\1</b>\n', text, flags=re.IGNORECASE)
+        # Списки
+        text = re.sub(r'<ul[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</ul>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<ol[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</ol>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<li[^>]*>', '🔸 ', text, flags=re.IGNORECASE)
+        text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
+        # Параграфы
+        text = re.sub(r'<p[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+        # Div, span и прочие
+        text = re.sub(r'<div[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<span[^>]*>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</span>', '', text, flags=re.IGNORECASE)
+        
+        # ШАГ 4: Нормализуем пробелы и переносы
         text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        
+        # ШАГ 5: Финальная валидация - удаляем недопустимые теги
+        # Telegram поддерживает: b, i, u, s, code, pre, a
+        # Удаляем все остальные HTML теги
+        text = re.sub(r'<(?!/?)(?!b|i|u|s|code|pre|a\s)[^>]+>', '', text, flags=re.IGNORECASE)
+        
         return text.strip()
 
     async def _send_groq_request(self, system_prompt: str, user_text: str, 

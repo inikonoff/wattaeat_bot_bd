@@ -6,7 +6,7 @@ import re
 import random
 from typing import List, Dict, Optional, Tuple
 from groq import AsyncGroq
-from config import GROQ_API_KEYS, GROQ_MODEL_TEXT, GROQ_MODEL_AUDIO
+from config import GROQ_API_KEYS, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,10 @@ class GroqService:
         
         self.api_keys = GROQ_API_KEYS
         logger.info(f"✅ GroqService инициализирован. Ключей: {len(self.api_keys)}")
+        
+        # Модели
+        self.model_text = GROQ_MODEL  # Используем основную модель из config
+        self.model_audio = "whisper-large-v3-turbo"  # Whisper для аудио
         
         self.max_tokens_map = {
             "analyze_categories": 500,
@@ -113,7 +117,7 @@ class GroqService:
                 max_tokens = self.max_tokens_map.get(task_type, 1000)
             
             response = await client.chat.completions.create(
-                model=GROQ_MODEL_TEXT,
+                model=self.model_text,  # Используем self.model_text
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_text}
@@ -142,7 +146,7 @@ class GroqService:
             client = self._get_client()
             transcription = await client.audio.transcriptions.create(
                 file=("voice_message.ogg", audio_data),
-                model=GROQ_MODEL_AUDIO,
+                model=self.model_audio,  # Используем self.model_audio
                 response_format="text",
                 language="ru"
             )
@@ -175,17 +179,30 @@ class GroqService:
     # --- GENERATION ---
     async def analyze_categories(self, products: str) -> List[str]:
         safe_products = self._sanitize_input(products, 300)
-        system_prompt = 'Ты шеф. Верни JSON массив категорий из: ["breakfast", "soup", "main", "salad", "snack", "dessert", "drink", "mix", "sauce"].'
+        system_prompt = 'Ты шеф-повар. Проанализируй список продуктов и верни ТОЛЬКО JSON массив категорий из следующих: ["breakfast", "soup", "main", "salad", "snack", "dessert", "drink", "mix", "sauce"]. Никакого текста кроме JSON массива!'
+        
+        user_prompt = f"Продукты: {safe_products}\n\nВерни JSON массив категорий блюд, которые можно приготовить из этих продуктов."
+        
         try:
-            response = await self._send_groq_request(system_prompt, f"Продукты: {safe_products}", "analyze_categories", 0.3, 300)
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match: return json.loads(json_match.group())[:4]
+            response = await self._send_groq_request(system_prompt, user_prompt, "analyze_categories", 0.3, 500)
+            logger.info(f"Raw categories response: {response}")
+            
+            # Ищем JSON массив в ответе
+            json_match = re.search(r'\[.*?\]', response, re.DOTALL)
+            if json_match:
+                categories = json.loads(json_match.group())
+                logger.info(f"Parsed categories: {categories}")
+                return categories[:4]
+            
+            logger.warning(f"No JSON found in response, using fallback")
             return self._fallback_categories(safe_products)
-        except: return self._fallback_categories(safe_products)
+        except Exception as e:
+            logger.error(f"Error in analyze_categories: {e}", exc_info=True)
+            return self._fallback_categories(safe_products)
 
     async def generate_dishes_list(self, products: str, category: str) -> List[Dict[str, str]]:
         safe_products = self._sanitize_input(products, 300)
-        system_prompt = f"Ты шеф. Предложи 3-5 блюд категории '{category}'. Верни JSON массив {{'name': '...', 'description': '...'}}."
+        system_prompt = f"Ты шеф. Предложи 3-5 блюд категории '{category}'. Верни JSON массив объектов с полями 'name' и 'description'."
         try:
             response = await self._send_groq_request(system_prompt, f"Продукты: {safe_products}", "generate_dishes", 0.7)
             json_match = re.search(r'\[.*\]', response, re.DOTALL)
@@ -343,7 +360,7 @@ class GroqService:
 ФОРМАТ: (тот же, что и раньше)"""
         
         try:
-            response = await self._send_groq_request(prompt, "Fix recipe", "regeneration", 0.4, 2800)
+            response = await self._send_groq_request(prompt, "Fix recipe", "regenerate_recipe", 0.4, 2800)
             return self._clean_html_for_telegram(response)
         except:
             return original + "\n\n⚠️ <i>Внимание: возможно, потребуются дополнительные ингредиенты.</i>"
